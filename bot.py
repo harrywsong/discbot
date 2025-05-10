@@ -8,6 +8,9 @@ import asyncpg
 import discord
 from discord.ext import commands
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from utils import config
 
 intents = discord.Intents.default()
