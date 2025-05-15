@@ -6,6 +6,7 @@ import io
 import discord
 import matplotlib
 import matplotlib.pyplot as plt
+import math
 from matplotlib import font_manager
 from discord import app_commands, Interaction, File
 from discord.ext import commands
@@ -94,22 +95,35 @@ class CrashRound:
         self.active = True
         self.current_mult = 1.0
         self.history = [1.0]
+
+        # ▶ Compute crash_point with a minimum of 1.02× and cap at MAX_MULTIPLIER
         u = random.random()
-        self.crash_point = round(min((1 - HOUSE_EDGE) / u, MAX_MULTIPLIER), 2)
+        raw = (1 - HOUSE_EDGE) / u
+        floored = max(raw, 1.02)
+        capped = min(floored, MAX_MULTIPLIER)
+        # round up to the nearest cent
+        self.crash_point = math.ceil(capped * 100) / 100
+
         # ▶ Log here: the target crash multiplier
-        await log_to_channel(self.bot,
-                             f"🎲 크래시 게임 시작! 목표 포인트: {self.crash_point:.2f}×"
-                             )
+        await log_to_channel(
+            self.bot,
+            f"🎲 크래시 게임 시작! 목표 포인트: {self.crash_point:.2f}×"
+        )
 
         channel = self.bot.get_channel(config.CRASH_CHANNEL_ID)
         self.view = CrashView(self)
+
         embed = discord.Embed(
             title="🎲 크래시 게임 시작!",
             description="💸 ‘캐쉬아웃’ 버튼을 눌러 베팅을 확정하세요!",
             color=discord.Color.red(),
             timestamp=datetime.now(timezone.utc)
         )
-        embed.add_field(name="🕐 현재 배수", value=f"{self.current_mult:.2f}×", inline=False)
+        embed.add_field(
+            name="🕐 현재 배수",
+            value=f"{self.current_mult:.2f}×",
+            inline=False
+        )
         embed.add_field(
             name="👥 참가자",
             value="\n".join(f"{m.mention} — 대기중" for m, _ in self.queue),
@@ -122,7 +136,8 @@ class CrashRound:
             self.msg = await channel.send(embed=embed, view=self.view, file=file)
         except:
             self.msg = await channel.send(
-                "🎲 크래시 게임 시작! 💸 ‘캐쉬아웃’ 버튼을 눌러 베팅을 확정하세요!", view=self.view
+                "🎲 크래시 게임 시작! 💸 ‘캐쉬아웃’ 버튼을 눌러 베팅을 확정하세요!",
+                view=self.view
             )
 
         while self.current_mult < self.crash_point:
@@ -216,7 +231,7 @@ class CrashRound:
                 try:
                     await log_to_channel(
                         self.bot,
-                        f"{m.mention}님 베팅 {bet}코인 → 결과: {result}, +{net}코인"
+                        f"{m.mention}님 베팅 {bet}코인 → 결과: {result}, {net}코인"
                     )
                 except Exception:
                     pass

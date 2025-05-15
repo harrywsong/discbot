@@ -267,6 +267,81 @@ class Coins(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(
+        name="코인거래",
+        description="친구에게 코인을 전송합니다 (10% 수수료 포함)."
+    )
+    @app_commands.describe(
+        member="코인을 받을 사용자",
+        amount="전송할 코인 수"
+    )
+    async def coins_tip(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        amount: int
+    ):
+        sender = interaction.user
+        recipient = member
+
+        # 기본 검증
+        if amount <= 0:
+            return await interaction.response.send_message(
+                "❌ 전송할 코인 수는 1 이상이어야 합니다.", ephemeral=True
+            )
+        if sender.id == recipient.id:
+            return await interaction.response.send_message(
+                "❌ 자신에게는 전송할 수 없습니다.", ephemeral=True
+            )
+
+        # 잔액 확인
+        row = await self.bot.db.fetchrow(
+            "SELECT balance FROM coins WHERE user_id = $1",
+            sender.id
+        )
+        sender_bal = row["balance"] if row else 0
+        if sender_bal < amount:
+            return await interaction.response.send_message(
+                "❌ 잔액이 부족합니다.", ephemeral=True
+            )
+
+        # 수수료 및 실수령액 계산
+        fee = int(amount * 0.10)
+        net = amount - fee
+
+        # 트랜잭션: 송금자 차감, 수신자 지급
+        await self.bot.db.execute(
+            """
+            INSERT INTO coins (user_id, balance)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id) DO UPDATE
+              SET balance = coins.balance + $2
+            """,
+            recipient.id, net
+        )
+        await self.bot.db.execute(
+            """
+            UPDATE coins
+               SET balance = balance - $2
+             WHERE user_id = $1
+            """,
+            sender.id, amount
+        )
+
+        # 리더보드 갱신
+        await self.refresh_leaderboard()
+
+        # 응답 및 로깅
+        await interaction.response.send_message(
+            f"✅ {sender.mention}님이 {recipient.mention}님께 "
+            f"{net} 코인(수수료 {fee} 코인)을 전송했습니다.",
+            ephemeral=True
+        )
+        await log_to_channel(
+            self.bot,
+            f"💸 {sender.display_name} → {recipient.display_name}: "
+            f"{amount}코인 전송 (수수료 {fee}코인), 실수령 {net}코인"
+        )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Coins(bot))
