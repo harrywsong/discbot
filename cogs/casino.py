@@ -1,14 +1,17 @@
 # cogs/casino.py
 
 import functools
-import discord
+
+from discord import AllowedMentions
+
 import random
 import re
-
+import discord
+from discord import app_commands, Interaction
 from discord.ext import commands
-from discord import app_commands, AllowedMentions, Interaction
-from utils.logger import log_to_channel
+from discord.ui import View, Button
 from utils import config
+from utils.logger import log_to_channel
 
 def channel_only(channel_id: int):
     def decorator(func):
@@ -72,7 +75,7 @@ class DuelView(discord.ui.View):
             await db.execute("UPDATE coins SET balance=balance+$2 WHERE user_id=$1", self.opponent.id, self.bet)
 
         public = interaction.guild.get_channel(config.DICE_DUEL_CHANNEL_ID)
-        await public.send(f"🎲 **Dice Duel 결과**\n{result}", allowed_mentions=AllowedMentions(users=True))
+        await public.send(f"🎲 **주사위 대결 결과**\n{result}", allowed_mentions=AllowedMentions(users=True))
 
         await interaction.client.get_cog("Coins").refresh_leaderboard()
 
@@ -183,11 +186,8 @@ class Casino(commands.Cog):
     @app_commands.describe(bet="베팅할 코인 수")
     @channel_only(config.BLACKJACK_CHANNEL_ID)
     async def blackjack(self, interaction: Interaction, bet: int):
-        # 1) log invocation
-        await log_to_channel(self.bot,
-                             f"{interaction.user.mention}님 블랙잭 베팅 {bet}코인 시도"
-                             )
-        # 2) Check balance
+        await log_to_channel(self.bot, f"{interaction.user.mention}님 블랙잭 베팅 {bet}코인 시도")
+        # 1) 잔액 체크
         row = await self.bot.db.fetchrow(
             "SELECT balance FROM coins WHERE user_id = $1",
             interaction.user.id
@@ -195,209 +195,248 @@ class Casino(commands.Cog):
         balance = row["balance"] if row else 0
         if bet <= 0 or balance < bet:
             return await interaction.response.send_message(
-                "❌ 유효하지 않은 베팅이거나 잔액이 부족합니다.",
-                ephemeral=True
+                "❌ 유효하지 않은 베팅이거나 잔액이 부족합니다.", ephemeral=True
             )
 
-        # 3) Defer to buy more thinking time
+        # 2) 시간을 벌기 위해 defer
         await interaction.response.defer(thinking=True)
 
-        # 4) Build and shuffle deck
-        ranks = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
-        suits = ["♠️", "♥️", "♦️", "♣️"]
-        deck = [r + s for r in ranks for s in suits]
+        # 3) 덱 생성 및 셔플
+        ranks = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"]
+        suits = ["♠️","♥️","♦️","♣️"]
+        deck = [r+s for r in ranks for s in suits]
         random.shuffle(deck)
 
-        # 5) Deal initial hands
-        player = [deck.pop(), deck.pop()]
+        # 4) 핸드 초기화
+        hands = [[deck.pop(), deck.pop()]]
+        hand_bets = [bet]
+        is_doubled = [False]
+        current = 0
         dealer = [deck.pop(), deck.pop()]
 
-        # 6) Value calculator
-        def hand_value(hand: list[str]) -> int:
-            vals = {"J": 10, "Q": 10, "K": 10, "A": 11}
+        def hand_value(cards: list[str]) -> int:
+            vals = {"J":10,"Q":10,"K":10,"A":11}
             total = aces = 0
-
-            for card in hand:
-                m = re.match(r'^(10|\d|[JQKA])', card)
-                rank = m.group(1)
-
-                if rank in vals:
-                    v = vals[rank]
-                else:
-                    v = int(rank)
-
-                total += v
-                if rank == "A":
-                    aces += 1
-
+            for c in cards:
+                m = re.match(r'^(10|\d|[JQKA])', c)
+                r = m.group(1)
+                total += vals[r] if r in vals else int(r)
+                if r == "A": aces += 1
             while total > 21 and aces:
-                total -= 10
-                aces -= 1
-
+                total -= 10; aces -= 1
             return total
 
-        player_value = hand_value(player)
-        dealer_value = hand_value(dealer)
+        # 5) 초기 값 계산 & 로그
+        values = [hand_value(hands[0])]
+        dealer_val = hand_value(dealer)
         await log_to_channel(self.bot,
-                             f"{interaction.user.mention}님 블랙잭 시작: 플레이어 {player_value}, 딜러 {dealer_value}"
-                             )
-        # 7) Build embed
+            f"{interaction.user.mention}님 블랙잭 시작: 플레이어 {values[0]}, 딜러 {dealer_val}"
+        )
+
+        # 6) Embed & View 준비
         embed = discord.Embed(title="♠️ 블랙잭", color=discord.Color.dark_green())
-        embed.add_field(
-            name="내 패",
-            value=f"{' '.join(player)} ({player_value})",
-            inline=False
-        )
-        embed.add_field(
-            name="딜러",
-            value=dealer[0],
-            inline=False
-        )
-
-        # 8) Create buttons
         view = discord.ui.View(timeout=60)
-        player_user = interaction.user
+        player = interaction.user
 
-        # Natural 21 on initial deal
-        if player_value == 21:
-            # reveal dealer
-            while dealer_value < 17:
+        async def update_embed():
+            embed.clear_fields()
+            for idx, hand in enumerate(hands, start=1):
+                prefix = "▶ " if idx-1 == current else ""
+                embed.add_field(
+                    name=f"{prefix}핸드 {idx}",
+                    value=f"{' '.join(hand)} ({hand_value(hand)})",
+                    inline=False
+                )
+            embed.add_field(name="딜러", value=dealer[0], inline=False)
+
+        # 첫 임베드 세팅
+        await update_embed()
+
+        # 7) 자연 블랙잭 처리
+        if values[0] == 21:
+            while dealer_val < 17:
                 dealer.append(deck.pop())
-                dealer_value = hand_value(dealer)
+                dealer_val = hand_value(dealer)
             embed.title = f"🎉 블랙잭 승리! (+{bet} 코인)"
-            embed.add_field(
+            embed.set_field_at(
+                1,
                 name="딜러",
-                value=f"{' '.join(dealer)} ({dealer_value})",
+                value=f"{' '.join(dealer)} ({dealer_val})",
                 inline=False
             )
-            for child in view.children:
-                child.disabled = True
+            view.clear_items()
             await interaction.followup.send(embed=embed, view=view)
             await self.bot.db.execute(
                 "UPDATE coins SET balance = balance + $2 WHERE user_id = $1",
-                player_user.id, bet
-            )
-            await log_to_channel(self.bot,
-                f"{player_user.mention}님 히트로 21 달성 → 자동 승리, +{bet}코인"
+                player.id, bet
             )
             await self.bot.get_cog("Coins").refresh_leaderboard()
             return
 
-        hit_btn = discord.ui.Button(label="히트", style=discord.ButtonStyle.primary)
+        # 8) 버튼 정의
+        hit_btn   = discord.ui.Button(label="히트",     style=discord.ButtonStyle.primary)
+        stand_btn = discord.ui.Button(label="스탠드",   style=discord.ButtonStyle.secondary)
+        dbl_btn   = discord.ui.Button(label="더블다운", style=discord.ButtonStyle.success)
+        split_btn = discord.ui.Button(label="스플릿",   style=discord.ButtonStyle.danger)
 
-        async def hit_callback(btn_inter: Interaction):
-            if btn_inter.user != player_user:
-                return await btn_inter.response.send_message(
-                    "❌ 이 버튼은 명령을 실행한 사용자만 사용할 수 있습니다.",
-                    ephemeral=True
-                )
+        # 9) 히트 콜백
+        async def hit_cb(i: Interaction):
+            if i.user != player:
+                return await i.response.send_message("❌ 당신만 사용할 수 있습니다.", ephemeral=True)
+            hands[current].append(deck.pop())
+            values[current] = hand_value(hands[current])
+            await update_embed()
+            if values[current] >= 21:
+                return await stand_cb(i)
+            await i.response.edit_message(embed=embed, view=view)
 
-            nonlocal player_value
-            player.append(deck.pop())
-            player_value = hand_value(player)
+        # 10) 스탠드 콜백
+        async def stand_cb(i: Interaction):
+            nonlocal current, dealer_val
+            if i.user != player:
+                return await i.response.send_message("❌ 당신만 사용할 수 있습니다.", ephemeral=True)
+            # 스플릿 중 다음 핸드 있으면 이동
+            if len(hands) > 1 and current < len(hands) - 1:
+                current += 1
+                await update_embed()
+                return await i.response.edit_message(embed=embed, view=view)
+            # 딜러 플레이
+            while dealer_val < 17:
+                dealer.append(deck.pop())
+                dealer_val = hand_value(dealer)
+            await update_embed()
             embed.set_field_at(
-                0,
-                name="내 패",
-                value=f"{' '.join(player)} ({player_value})",
+                len(hands),
+                name="딜러",
+                value=f"{' '.join(dealer)} ({dealer_val})",
                 inline=False
             )
+            view.clear_items()
+            # 결과 계산 & DB 반영
+            summary = []
+            for idx, hand in enumerate(hands, start=1):
+                hv = hand_value(hand)
+                stake = hand_bets[idx-1] * (2 if is_doubled[idx-1] else 1)
+                if hv > 21:
+                    net, res = -stake, "버스트"
+                elif dealer_val > 21 or hv > dealer_val:
+                    net, res = stake, "승리"
+                elif hv < dealer_val:
+                    net, res = -stake, "패배"
+                else:
+                    net, res = 0, "무승부"
+                summary.append(f"핸드 {idx}: {res} ({net:+} 코인)")
+                if net:
+                    await self.bot.db.execute(
+                        "UPDATE coins SET balance = balance + $2 WHERE user_id = $1",
+                        player.id, net
+                    )
+            embed.title = "\n".join(summary)
+            await i.response.edit_message(embed=embed, view=view)
+            await self.bot.get_cog("Coins").refresh_leaderboard()
+            await log_to_channel(self.bot,
+                f"{player.display_name}님 블랙잭 결과: {'; '.join(summary)}"
+            )
+            return
 
-            # Auto‑win on hitting 21
-            if player_value == 21:
-                while dealer_value < 17:
+        # 11) 더블다운 콜백
+        async def dbl_cb(i: Interaction):
+            # 1) only the original player can press
+            if i.user != player:
+                return await i.response.send_message("❌ 당신만 사용할 수 있습니다.", ephemeral=True)
+
+            # 2) only allowed on first two cards
+            if len(hands[current]) != 2:
+                return await i.response.send_message("ℹ️ 첫 2장에서만 더블다운 가능합니다.", ephemeral=True)
+
+            # 3) mark as doubled, draw one card
+            is_doubled[current] = True
+            hands[current].append(deck.pop())
+
+            # 4) update embed to show new hand value
+            await update_embed()
+
+            # 5) calculate current hand total
+            curr_val = hand_value(hands[current])
+
+            # 6) if bust (>21), handle immediately
+            if curr_val > 21:
+                # build bust title
+                loss_amount = hand_bets[current] * 2
+                embed.title = f"💥 버스트! (-{loss_amount} 코인)"
+
+                # reveal dealer’s full hand
+                while dealer_val < 17:
                     dealer.append(deck.pop())
-                    dealer_value = hand_value(dealer)
-                embed.title = f"🎉 21 달성! 자동 승리! (+{bet} 코인)"
-                embed.add_field(
-                    name="Dealer Hand",
-                    value=f"{' '.join(dealer)} ({dealer_value})",
+                    dealer_val = hand_value(dealer)
+                embed.set_field_at(
+                    1,
+                    name="딜러",
+                    value=f"{' '.join(dealer)} ({dealer_val})",
                     inline=False
                 )
-                for child in view.children:
-                    child.disabled = True
-                await btn_inter.response.edit_message(embed=embed, view=view)
-                await self.bot.db.execute(
-                    "UPDATE coins SET balance = balance + $2 WHERE user_id = $1",
-                    player_user.id, bet
-                )
-                await log_to_channel(self.bot,
-                                     f"{player_user.mention}님 히트로 21 달성 → 자동 승리, +{bet}코인"
-                                     )
-                await self.bot.get_cog("Coins").refresh_leaderboard()
-                return
 
-            if player_value > 21:
-                embed.title = f"💥 버스트! (-{bet} 코인)"
-                for c in view.children:
-                    c.disabled = True
-                await btn_inter.response.edit_message(embed=embed, view=view)
+                # disable all buttons
+                for btn in view.children:
+                    btn.disabled = True
+
+                # edit the message once
+                await i.response.edit_message(embed=embed, view=view)
+
+                # apply 2× loss
                 await self.bot.db.execute(
                     "UPDATE coins SET balance = balance - $2 WHERE user_id = $1",
-                    player_user.id, bet
-                )
-                await log_to_channel(self.bot,
-                                     f"{player_user.mention}님 버스트 → -{bet}코인"
-                                     )
-            else:
-                await btn_inter.response.edit_message(embed=embed, view=view)
-
-            await self.bot.get_cog("Coins").refresh_leaderboard()
-
-        hit_btn.callback = hit_callback
-        view.add_item(hit_btn)
-
-        stand_btn = discord.ui.Button(label="스탠드", style=discord.ButtonStyle.secondary)
-
-        async def stand_callback(btn_inter: Interaction):
-            if btn_inter.user != player_user:
-                return await btn_inter.response.send_message(
-                    "❌ 이 버튼은 명령을 실행한 사용자만 사용할 수 있습니다.",
-                    ephemeral=True
-                )
-
-            nonlocal dealer_value
-            while dealer_value < 17:
-                dealer.append(deck.pop())
-                dealer_value = hand_value(dealer)
-
-            for c in view.children:
-                c.disabled = True
-
-            # determine outcome
-            if dealer_value > 21 or player_value > dealer_value:
-                net = bet
-                title = f"🎉 승리! (+{net} 코인)"
-                outcome = "승리"
-            elif player_value < dealer_value:
-                net = -bet
-                title = f"😞 패배... ({net} 코인)"
-                outcome = "패배"
-            else:
-                net = 0
-                title = f"⚖️ 무승부. ({net} 코인)"
-                outcome = "무승부"
-
-            embed.title = title
-            embed.add_field(
-                name="딜러",
-                value=f"{' '.join(dealer)} ({dealer_value})",
-                inline=False
-            )
-            await btn_inter.response.edit_message(embed=embed, view=view)
-            await log_to_channel(self.bot,
-                                 f"{player_user.mention}님 스탠드 → 딜러 {dealer_value}, 결과 {outcome}, +{net}코인"
-                                 )
-            if net:
-                await self.bot.db.execute(
-                    "UPDATE coins SET balance = balance + $2 WHERE user_id = $1",
-                    player_user.id, net
+                    player.id, loss_amount
                 )
                 await self.bot.get_cog("Coins").refresh_leaderboard()
+                await log_to_channel(
+                    self.bot,
+                    f"{player.display_name}님 더블다운 버스트 → -{loss_amount}코인"
+                )
+                return
 
-        stand_btn.callback = stand_callback
+            # 7) not busted? fall back to stand logic
+            return await stand_cb(i)
+
+        # 12) 스플릿 콜백
+        async def split_cb(i: Interaction):
+            if i.user != player:
+                return await i.response.send_message("❌ 당신만 사용할 수 있습니다.", ephemeral=True)
+            if len(hands) > 1:
+                return await i.response.send_message("ℹ️ 이미 스플릿되었습니다.", ephemeral=True)
+            r0 = re.match(r'^(10|\d|[JQKA])', hands[0][0]).group(1)
+            r1 = re.match(r'^(10|\d|[JQKA])', hands[0][1]).group(1)
+            if r0 != r1:
+                return await i.response.send_message("ℹ️ 같은 값의 카드 두 장에서만 스플릿 가능합니다.", ephemeral=True)
+            row = await self.bot.db.fetchrow(
+                "SELECT balance FROM coins WHERE user_id = $1", player.id
+            )
+            if (row["balance"] if row else 0) < hand_bets[0]:
+                return await i.response.send_message("❌ 잔액이 부족합니다.", ephemeral=True)
+
+            # 스플릿 베팅 차감
+            await self.bot.db.execute(
+                "UPDATE coins SET balance = balance - $2 WHERE user_id = $1",
+                player.id, hand_bets[0]
+            )
+            c1, c2 = hands[0]
+            hands[:]     = [[c1, deck.pop()], [c2, deck.pop()]]
+            hand_bets[:] = [hand_bets[0], hand_bets[0]]
+            is_doubled[:] = [False, False]
+            await update_embed()
+            await i.response.edit_message(embed=embed, view=view)
+
+        # 13) 콜백 연결 & 뷰에 추가
+        hit_btn.callback   = hit_cb
+        stand_btn.callback = stand_cb
+        dbl_btn.callback   = dbl_cb
+        split_btn.callback = split_cb
+        view.add_item(hit_btn)
         view.add_item(stand_btn)
+        view.add_item(dbl_btn)
+        view.add_item(split_btn)
 
-        # 9) Send embed + view
+        # 14) 메시지 전송
         await interaction.followup.send(embed=embed, view=view)
 
     @app_commands.command(name="동전", description="🔀 동전 뒤집기 (50/50)")
@@ -484,6 +523,62 @@ class Casino(commands.Cog):
                                  )
         except Exception:
             pass
+
+    @app_commands.command(
+        name="가위바위보",
+        description="✌️✊🖐️ 봇과 가위바위보! 이기면 2코인 획득"
+    )
+    @app_commands.checks.cooldown(1, 180, key=lambda i: i.user.id)
+    @app_commands.choices(
+        choice=[
+            app_commands.Choice(name="✌️ 가위", value="scissors"),
+            app_commands.Choice(name="✊ 바위", value="rock"),
+            app_commands.Choice(name="🖐️ 보", value="paper"),
+        ]
+    )
+    @channel_only(config.RPC_CHANNEL_ID)
+    async def rps(self, interaction: Interaction, choice: app_commands.Choice[str]):
+        user_choice = choice.value
+        bot_choice = random.choice(["rock", "paper", "scissors"])
+        wins = {"rock": "scissors", "scissors": "paper", "paper": "rock"}
+
+        if user_choice == bot_choice:
+            result, delta = "⚖️ 무승부! 코인은 변동 없습니다.", 0
+        elif wins[user_choice] == bot_choice:
+            result, delta = "🏆 당신의 승리! +2 코인", 2
+        else:
+            result, delta = "❌ 패배... 다음 기회에!", 0
+
+        if delta > 0:
+            await self.bot.db.execute(
+                "UPDATE coins SET balance = balance + $2 WHERE user_id = $1",
+                interaction.user.id, delta
+            )
+            await self.bot.get_cog("Coins").refresh_leaderboard()
+            await log_to_channel(
+                self.bot,
+                f"{interaction.user.display_name}님이 가위바위보 승리로 {delta}코인 획득!"
+            )
+
+        emoji_map = {"rock": "✊", "paper": "🖐️", "scissors": "✌️"}
+        text = (
+            f"**숯검댕이** 🆚 **{interaction.user.display_name}**\n\n"
+            f"숯검댕이: {emoji_map[bot_choice]}  당신: {emoji_map[user_choice]}\n\n"
+            f"{result}"
+        )
+        await interaction.response.send_message(text, allowed_mentions=None)
+
+    async def cog_app_command_error(self, interaction: Interaction, error: app_commands.AppCommandError):
+        # Handle cooldowns
+        if isinstance(error, app_commands.CommandOnCooldown):
+            retry = int(error.retry_after)
+            m, s = divmod(retry, 60)
+            await interaction.response.send_message(
+                f"⏳ {m}분 {s}초 후에 다시 시도해주세요.", ephemeral=True
+            )
+        else:
+            # Let other errors bubble up (or handle them here)
+            raise error
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Casino(bot))

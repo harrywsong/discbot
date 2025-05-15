@@ -83,6 +83,9 @@ class DailyXPView(View):
         )
 
 async def grant_xp(bot: commands.Bot, user: discord.Member, amount: int):
+    # double if they hold the XP Booster role
+    if discord.utils.get(user.roles, name="XP Booster"):
+        amount *= 2
     row = await bot.db.fetchrow("SELECT xp, level FROM xp WHERE user_id = $1", user.id)
     xp, lvl = (row["xp"], row["level"]) if row else (0, 0)
 
