@@ -10,7 +10,7 @@ from discord.ui import Modal, TextInput
 from utils import config
 from utils.logger import log_to_channel
 
-TEST_MODE = True
+TEST_MODE = False
 
 def expiry(seconds: int) -> int:
     return 15 if TEST_MODE else seconds
