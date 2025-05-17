@@ -154,13 +154,24 @@ class Coins(commands.Cog):
         coin_ch = self.bot.get_channel(config.DAILY_COINS_CHANNEL_ID)
         if not coin_ch:
             return
+
         embed = await self.build_leaderboard_embed()
-        try:
-            msg = await coin_ch.fetch_message(config.COIN_LEADERBOARD_MESSAGE_ID)
-            await msg.edit(embed=embed)
-        except discord.NotFound:
-            sent = await coin_ch.send(embed=embed)
-            config.COIN_LEADERBOARD_MESSAGE_ID = sent.id
+        msg_id = config.COIN_LEADERBOARD_MESSAGE_ID
+
+        # If we have an ID, try to fetch & edit it
+        if msg_id:
+            try:
+                msg = await coin_ch.fetch_message(msg_id)
+                await msg.edit(embed=embed)
+                return
+            except (discord.NotFound, discord.HTTPException):
+                # either the message was deleted, or the ID was bad → fall through to send a new one
+                pass
+
+        # No valid ID or fetch/edit failed: send a fresh message
+        sent = await coin_ch.send(embed=embed)
+        # store its ID for next time
+        config.COIN_LEADERBOARD_MESSAGE_ID = sent.id
 
     @app_commands.command(
         name="coins",
@@ -276,10 +287,10 @@ class Coins(commands.Cog):
         amount="전송할 코인 수"
     )
     async def coins_tip(
-        self,
-        interaction: discord.Interaction,
-        member: discord.Member,
-        amount: int
+            self,
+            interaction: discord.Interaction,
+            member: discord.Member,
+            amount: int
     ):
         sender = interaction.user
         recipient = member
@@ -309,7 +320,7 @@ class Coins(commands.Cog):
         fee = int(amount * 0.10)
         net = amount - fee
 
-        # 트랜잭션: 송금자 차감, 수신자 지급
+        # 트랜잭션: 수신자 지급, 송금자 차감
         await self.bot.db.execute(
             """
             INSERT INTO coins (user_id, balance)
@@ -331,12 +342,23 @@ class Coins(commands.Cog):
         # 리더보드 갱신
         await self.refresh_leaderboard()
 
-        # 응답 및 로깅
+        # 1) Sender에게 응답
         await interaction.response.send_message(
             f"✅ {sender.mention}님이 {recipient.mention}님께 "
-            f"{net} 코인(수수료 {fee} 코인)을 전송했습니다.",
-            ephemeral=True
+            f"{net} 코인(수수료 {fee}코인)을 전송했습니다."
         )
+
+        # 2) Recipient에게 DM 알림
+        try:
+            await recipient.send(
+                f"🎉 {recipient.mention}님, {sender.display_name}님이 당신에게 "
+                f"{net} 코인(수수료 {fee}코인)을 전송하셨습니다!"
+            )
+        except discord.Forbidden:
+            # DM 차단 상태면 무시
+            pass
+
+        # 3) 로깅
         await log_to_channel(
             self.bot,
             f"💸 {sender.display_name} → {recipient.display_name}: "

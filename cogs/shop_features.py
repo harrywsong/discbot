@@ -5,8 +5,10 @@ import traceback
 from discord import Interaction
 from discord.ext import commands
 from discord.ui import View, Select, Button
-
 from discord.ui import Modal, TextInput
+
+from datetime import datetime, timezone, timedelta
+
 from utils import config
 from utils.logger import log_to_channel
 
@@ -44,7 +46,7 @@ class NickColorSelect(Select):
         bal = row["balance"] if row else 0
         if bal < self.COST:
             return await inter.followup.send(
-                f"❌ 잔액이 {self.COST}코인 이상이어야 합니다. 현재 잔액: {bal}코인"
+                f"❌ 잔액이 {self.COST}코인 이상이어야 합니다. 현재 잔액: {bal}코인", ephemeral=True
             )
 
         # deduct & log
@@ -87,6 +89,10 @@ class NickColorSelect(Select):
                 ephemeral=True
         )
 
+        await inter.followup.send(
+            f"{user.mention}님이 {choice} 색을 구매하셨습니다! 지금부터 12시간 동안 적용됩니다."
+        )
+
         # schedule removal
         asyncio.create_task(
             self._remove_later(inter.client, user, role, expiry(12*3600))
@@ -107,57 +113,49 @@ class CustomRoleModal(Modal):
         self.add_item(self.role_color)
 
     async def on_submit(self, inter: Interaction):
-        # 0) defer immediately so Discord doesn’t time out
-        await inter.response.defer(ephemeral=True)
+        await inter.response.defer()
 
         try:
             guild = inter.guild
             rn    = self.role_name.value
             color = discord.Color(int(self.role_color.value.strip("#"), 16))
 
-            # 1) Create the role, hoisted
+            # create and position role
             role = await guild.create_role(
                 name=rn,
                 color=color,
                 hoist=True,
                 mentionable=False
             )
-
-            # 2) Move it above your base role
-            anchor = guild.get_role(config.BASE_ROLE) \
-                  or discord.utils.get(guild.roles, name="정령")
+            anchor = guild.get_role(config.BASE_ROLE) or discord.utils.get(guild.roles, name="정령")
             if anchor:
-                # positions wants a dict: {role_id: new_position}
-                await guild.edit_role_positions(positions={
-                    role: anchor.position + 1
-                })
-
+                await guild.edit_role_positions(positions={role: anchor.position + 1})
                 await role.edit(hoist=True)
 
-            # 3) Assign to the user
+            # assign, log, refresh
             await inter.user.add_roles(role, reason="Shop: Custom role")
+            await inter.client.get_cog("Coins").refresh_leaderboard()
 
-            # 4) Send success
-            await inter.followup.send(
-                f"✅ 역할 `{rn}` 생성·할당되었습니다. 만료까지 {expiry(12*3600)}초 남음.",
-                ephemeral=True
+            # compute expiry
+            delay = expiry(12 * 3600)
+
+            # announce in channel
+            await inter.channel.send(
+                f"{inter.user.mention}님이 커스텀 역할 `{rn}`을 구매하셨습니다! 지금부터 12시간 동안 적용됩니다."
             )
 
-            # 5) Refresh leaderboard & schedule deletion
-            await inter.client.get_cog("Coins").refresh_leaderboard()
+            # schedule delete
             asyncio.create_task(
-                self._remove_later(inter.client, guild, role, expiry(12*3600))
+                self._remove_later(inter.client, guild, role, delay)
             )
 
         except Exception:
             tb = traceback.format_exc()
-            # send you the stack trace—and also log it
             await inter.followup.send(
                 f"❌ 역할 생성 중 오류가 발생했습니다:\n```py\n{tb}```",
                 ephemeral=True
             )
             await log_to_channel(inter.client, f"[CustomRoleModal] Error:\n```{tb}```")
-            # re‑raise if you want it to bubble to console
             raise
 
     async def _remove_later(self, bot, guild, role, delay):
@@ -217,20 +215,18 @@ class XPBoosterButton(Button):
         )
 
     async def callback(self, inter: Interaction):
-        await inter.response.defer(ephemeral=True)
+        await inter.response.defer()
         user, guild = inter.user, inter.guild
 
-        # 1) Balance check
         row = await inter.client.db.fetchrow(
             "SELECT balance FROM coins WHERE user_id=$1", user.id
         )
         bal = row["balance"] if row else 0
         if bal < self.COST:
             return await inter.followup.send(
-                f"❌ 잔액이 {self.COST}코인 이상이어야 합니다. 현재 잔액: {bal}코인"
+                f"❌ 잔액이 {self.COST}코인 이상이어야 합니다. 현재 잔액: {bal}코인", ephemeral=True
             )
 
-        # 2) Deduct & log
         await inter.client.db.execute(
             "UPDATE coins SET balance = balance - $2 WHERE user_id = $1",
             user.id, self.COST
@@ -239,39 +235,32 @@ class XPBoosterButton(Button):
             inter.client,
             f"🛒 {user.display_name}님이 XP 2배 쿠폰 구매로 {self.COST}코인을 사용했습니다."
         )
-
-        # 3) Refresh leaderboard
         await inter.client.get_cog("Coins").refresh_leaderboard()
 
-        # 4) Grant XP Booster role
         booster = discord.utils.get(guild.roles, name="XP Booster")
         if not booster:
             booster = await guild.create_role(
-                name="XP Booster",
-                color=discord.Color.blue(),
-                hoist=True
+                name="XP Booster", color=discord.Color.blue(), hoist=True
             )
 
-        # 5) Grant Store role
         store = guild.get_role(self.STORE_ROLE_ID)
         if not store:
-            # fallback: if you want to auto-create it, otherwise omit
             store = await guild.create_role(
-                name="Store Access",
-                color=discord.Color.dark_gray()
+                name="Store Access", color=discord.Color.dark_gray()
             )
 
-        # 6) Assign both
         await user.add_roles(booster, store, reason="Shop: XP Booster + Store Access")
 
-        await inter.followup.send(
-            f"✅ XP Booster와 스토어 접근 역할이 부여되었습니다. 만료까지 {expiry(12*3600)}초 남음.",
-            ephemeral=True
+        delay = expiry(12 * 3600)
+        expire_dt = datetime.now(timezone.utc) + timedelta(seconds=delay)
+        expire_str = f"{expire_dt.month}월 {expire_dt.day}일 {expire_dt.hour}시 {expire_dt.minute}분에 만료됩니다."
+
+        await inter.channel.send(
+            f"{user.mention}님이 XP 2배 쿠폰과 스토어 접근 역할을 구매하셨습니다! 지금부터 12시간 동안 적용됩니다."
         )
 
-        # 7) Schedule removal of both
         asyncio.create_task(
-            self._remove_later(inter.client, user, booster, store, expiry(12*3600))
+            self._remove_later(inter.client, user, booster, store, delay)
         )
 
     async def _remove_later(self, bot, user, booster_role, store_role, delay):
