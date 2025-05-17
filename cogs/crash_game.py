@@ -38,7 +38,11 @@ matplotlib.rcParams['axes.unicode_minus'] = False  # 마이너스 기호 깨짐 
 
 # 하우스 어드밴티지 (예: 5%)
 HOUSE_EDGE = 0.05
-MAX_MULTIPLIER = 24.0
+MAX_MULTIPLIER = 20.0
+MIN_MULT     = 1.02
+DESIRED_M    = 20.0
+DESIRED_P    = 0.01
+POWER = math.log(DESIRED_P) / math.log(MIN_MULT/DESIRED_M)
 
 class CrashView(View):
     def __init__(self, round_obj):
@@ -63,7 +67,7 @@ class CrashView(View):
         await self.round.update_embed()
         # ▶ Log here: who cashed out and at what multiplier
         await log_to_channel(self.round.bot,
-                             f"✅ {interaction.user.mention}님이 {self.round.current_mult:.2f}×에 캐쉬아웃"
+                             f"✅ {interaction.user.name}님이 {self.round.current_mult:.2f}×에 캐쉬아웃"
                              )
 
 
@@ -96,19 +100,27 @@ class CrashRound:
         self.current_mult = 1.0
         self.history = [1.0]
 
-        # ▶ Compute crash_point with a minimum of 1.02× and cap at MAX_MULTIPLIER
+        # ▶ power‑law distribution (P(M≥20)=1%)
         u = random.random()
-        raw = (1 - HOUSE_EDGE) / u
-        floored = max(raw, 1.02)
-        capped = min(floored, MAX_MULTIPLIER)
-        # round up to the nearest cent
-        self.crash_point = math.ceil(capped * 100) / 100
+        raw = MIN_MULT * (u ** (-1 / POWER))
+        # floor at MIN_MULT, cap at MAX_MULTIPLIER
+        crash = min(max(raw, MIN_MULT), MAX_MULTIPLIER)
+        # round up to nearest cent
+        self.crash_point = math.ceil(crash * 100) / 100
 
-        # ▶ Log here: the target crash multiplier
-        await log_to_channel(
-            self.bot,
-            f"🎲 크래시 게임 시작! 목표 포인트: {self.crash_point:.2f}×"
-        )
+        # ▶ Notify a specific user by DM
+        target_user = self.bot.get_user(config.CRASH_NOTIFY_USER_ID)
+        if target_user:
+            await target_user.send(
+                f"🎲 크래시 게임 시작! 목표 포인트: {self.crash_point:.2f}×"
+            )
+        else:
+            # fallback to logging if the user isn't found
+            await log_to_channel(
+                self.bot,
+                f"[WARN] Could not DM user {config.CRASH_NOTIFY_USER_ID}. "
+                f"크래시 목표 포인트: {self.crash_point:.2f}×"
+            )
 
         channel = self.bot.get_channel(config.CRASH_CHANNEL_ID)
         self.view = CrashView(self)
@@ -141,7 +153,7 @@ class CrashRound:
             )
 
         while self.current_mult < self.crash_point:
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
             self.current_mult = round(self.current_mult * 1.05, 2)
             self.history.append(self.current_mult)
             await self.update_embed()
@@ -219,9 +231,13 @@ class CrashRound:
 
                 summary_lines.append(line)
 
-                # DB 반영
+                # ▶ DB 반영 (잔액이 0 미만으로 내려가지 않도록 보장)
                 await self.bot.db.execute(
-                    "UPDATE coins SET balance=balance+$2 WHERE user_id=$1",
+                    """
+                    UPDATE coins
+                       SET balance = GREATEST(balance + $2, 0)
+                     WHERE user_id = $1
+                    """,
                     m.id, net
                 )
 
@@ -267,7 +283,7 @@ class CrashGame(commands.Cog):
         self.round.join(interaction.user, bet)
         # ▶ Log here: who joined and their bet
         await log_to_channel(self.bot,
-                             f"👥 {interaction.user.mention}님이 {bet}코인으로 크래시 참가 (대기열 {len(self.round.queue)}명)"
+                             f"👥 {interaction.user.name}님이 {bet}코인으로 크래시 참가 (대기열 {len(self.round.queue)}명)"
                              )
         if len(self.round.queue) == 1:
             msg += " \n20초 후 게임이 시작됩니다."

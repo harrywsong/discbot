@@ -15,9 +15,10 @@ from utils.logger import log_to_channel
 # ── Constants & Globals ─────────────────────────────────
 
 MAPS = [
-    "Bind", "Haven", "Split", "Ascent", "Icebox",
-    "Breeze", "Fracture", "Pearl", "Lotus", "Sunset", "Abyss"
+    "Ascent", "Haven", "Icebox", "Lotus", "Pearl", "Split", "Sunset"
 ]
+
+#    "Bind", "Haven", "Split", "Ascent", "Icebox", "Breeze", "Fracture", "Pearl", "Lotus", "Sunset", "Abyss"
 
 current_custom_game = None  # Tracks the active CustomGameView
 
