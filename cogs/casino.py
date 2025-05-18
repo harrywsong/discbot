@@ -529,10 +529,11 @@ class Casino(commands.Cog):
             if bal < extra:
                 return await i.response.send_message("❌ 잔액이 부족하여 더블다운할 수 없습니다.", ephemeral=True)
 
-            # 4) 추가 베팅액 차감
+            # 4) 총 2배 베팅액 차감
+            total = extra * 2
             await self.bot.db.execute(
                 "UPDATE coins SET balance = GREATEST(balance - $2, 0) WHERE user_id=$1",
-                player.id, extra
+                player.id, total
             )
             await self.bot.get_cog("Coins").refresh_leaderboard()
 
