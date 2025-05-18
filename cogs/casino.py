@@ -22,25 +22,25 @@ RED_NUMBERS = {
 }
 
 class RPSView(View):
-    def __init__(self, user: commands.Member, bot: commands.Bot):
+    def __init__(self, user: discord.Member, bot: commands.Bot):
         super().__init__(timeout=60)
         self.user = user
-        self.bot = bot
+        self.bot  = bot
 
     async def disable_all(self):
-        for btn in self.children:
-            btn.disabled = True
+        for child in self.children:
+            child.disabled = True
 
-    @Button(label="✊ 바위", style=discord.ButtonStyle.primary)
-    async def rock(self, button: Button, interaction: Interaction):
+    @discord.ui.button(label="✊ 바위", style=discord.ButtonStyle.primary)
+    async def rock_button(self, interaction: Interaction, button: discord.ui.Button):
         await self.resolve(interaction, "rock")
 
-    @Button(label="✌️ 가위", style=discord.ButtonStyle.success)
-    async def scissors(self, button: Button, interaction: Interaction):
+    @discord.ui.button(label="✌️ 가위", style=discord.ButtonStyle.success)
+    async def scissors_button(self, interaction: Interaction, button: discord.ui.Button):
         await self.resolve(interaction, "scissors")
 
-    @Button(label="🖐️ 보", style=discord.ButtonStyle.secondary)
-    async def paper(self, button: Button, interaction: Interaction):
+    @discord.ui.button(label="🖐️ 보", style=discord.ButtonStyle.secondary)
+    async def paper_button(self, interaction: Interaction, button: discord.ui.Button):
         await self.resolve(interaction, "paper")
 
     async def resolve(self, interaction: Interaction, user_choice: str):
@@ -61,7 +61,7 @@ class RPSView(View):
 
         if delta:
             await self.bot.db.execute(
-                "UPDATE coins SET balance = GREATEST(balance + $2, 0) WHERE user_id = $1",
+                "UPDATE coins SET balance = GREATEST(balance + $2,0) WHERE user_id = $1",
                 self.user.id, delta
             )
             await self.bot.get_cog("Coins").refresh_leaderboard()
@@ -728,7 +728,8 @@ class Casino(commands.Cog):
         view = RPSView(interaction.user, self.bot)
         await interaction.response.send_message(
             f"{interaction.user.mention} 가위바위보! 버튼을 눌러 선택하세요.",
-            view=view, allowed_mentions=AllowedMentions.none()
+            view=view,
+            allowed_mentions=AllowedMentions.none()
         )
 
     async def cog_app_command_error(self, interaction: Interaction, error: app_commands.AppCommandError):
