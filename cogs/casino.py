@@ -1,20 +1,19 @@
 # cogs/casino.py new
 
-import functools
-
-from discord import AllowedMentions
+import discord
 
 import random
-import re
-import discord
-from discord import app_commands, Interaction
-from discord.ext import commands
-from utils import config
-from utils.logger import log_to_channel
-
+import functools
 import io
 import asyncio
-from PIL import Image, ImageDraw, ImageFont
+import re
+
+from discord import AllowedMentions, app_commands, Interaction, File
+from discord.ext import commands
+from discord.ui import View, Button
+from utils import config
+from utils.logger import log_to_channel
+from PIL import Image, ImageDraw
 
 # 실제 유럽식 룰렛의 빨강 번호 집합
 RED_NUMBERS = {
@@ -22,6 +21,65 @@ RED_NUMBERS = {
     19,21,23,25,27,30,32,34,36
 }
 
+class RPSView(View):
+    def __init__(self, user: commands.Member, bot: commands.Bot):
+        super().__init__(timeout=60)
+        self.user = user
+        self.bot = bot
+
+    async def disable_all(self):
+        for btn in self.children:
+            btn.disabled = True
+
+    @Button(label="✊ 바위", style=discord.ButtonStyle.primary)
+    async def rock(self, button: Button, interaction: Interaction):
+        await self.resolve(interaction, "rock")
+
+    @Button(label="✌️ 가위", style=discord.ButtonStyle.success)
+    async def scissors(self, button: Button, interaction: Interaction):
+        await self.resolve(interaction, "scissors")
+
+    @Button(label="🖐️ 보", style=discord.ButtonStyle.secondary)
+    async def paper(self, button: Button, interaction: Interaction):
+        await self.resolve(interaction, "paper")
+
+    async def resolve(self, interaction: Interaction, user_choice: str):
+        if interaction.user != self.user:
+            return await interaction.response.send_message(
+                "❌ 도전한 사용자만 버튼을 누를 수 있습니다.", ephemeral=True
+            )
+
+        bot_choice = random.choice(["rock", "paper", "scissors"])
+        wins = {"rock":"scissors", "scissors":"paper", "paper":"rock"}
+
+        if user_choice == bot_choice:
+            text, delta = "⚖️ 무승부! 코인은 변동 없습니다.", 0
+        elif wins[user_choice] == bot_choice:
+            text, delta = "🏆 승리! +2 코인", 2
+        else:
+            text, delta = "❌ 패배... 다음 기회에!", 0
+
+        if delta:
+            await self.bot.db.execute(
+                "UPDATE coins SET balance = GREATEST(balance + $2, 0) WHERE user_id = $1",
+                self.user.id, delta
+            )
+            await self.bot.get_cog("Coins").refresh_leaderboard()
+            await log_to_channel(
+                self.bot,
+                f"{self.user.display_name}님이 가위바위보 승리로 {delta}코인 획득!"
+            )
+
+        emoji = {"rock":"✊", "paper":"🖐️", "scissors":"✌️"}
+        result_msg = (
+            f"**숯검댕이** 🆚 **{self.user.display_name}**\n\n"
+            f"숯검댕이: {emoji[bot_choice]}  {self.user.display_name}: {emoji[user_choice]}\n\n"
+            f"{text}"
+        )
+
+        await self.disable_all()
+        await interaction.response.edit_message(content=result_msg, view=self)
+        self.stop()
 
 def draw_roulette_wheel(size: int = 400) -> Image.Image:
     """
@@ -661,47 +719,17 @@ class Casino(commands.Cog):
 
     @app_commands.command(
         name="가위바위보",
-        description="✌️✊🖐️ 봇과 가위바위보! 이기면 2코인 획득"
+        description="✌️✊🖐️ 버튼으로 봇과 가위바위보! 이기면 2코인 획득"
     )
     @app_commands.checks.cooldown(1, 60, key=lambda i: i.user.id)
-    @app_commands.choices(
-        choice=[
-            app_commands.Choice(name="✌️ 가위", value="scissors"),
-            app_commands.Choice(name="✊ 바위", value="rock"),
-            app_commands.Choice(name="🖐️ 보", value="paper"),
-        ]
-    )
     @channel_only(config.RPC_CHANNEL_ID)
-    async def rps(self, interaction: Interaction, choice: app_commands.Choice[str]):
-        user_choice = choice.value
-        bot_choice = random.choice(["rock", "paper", "scissors"])
-        wins = {"rock": "scissors", "scissors": "paper", "paper": "rock"}
-
-        if user_choice == bot_choice:
-            result, delta = "⚖️ 무승부! 코인은 변동 없습니다.", 0
-        elif wins[user_choice] == bot_choice:
-            result, delta = "🏆 승리! +2 코인", 2
-        else:
-            result, delta = "❌ 패배... 다음 기회에!", 0
-
-        if delta > 0:
-            await self.bot.db.execute(
-                "UPDATE coins SET balance = GREATEST(balance + $2, 0) WHERE user_id = $1",
-                interaction.user.id, delta
-            )
-            await self.bot.get_cog("Coins").refresh_leaderboard()
-            await log_to_channel(
-                self.bot,
-                f"{interaction.user.display_name}님이 가위바위보 승리로 {delta}코인 획득!"
-            )
-
-        emoji_map = {"rock": "✊", "paper": "🖐️", "scissors": "✌️"}
-        text = (
-            f"**숯검댕이** 🆚 **{interaction.user.display_name}**\n\n"
-            f"숯검댕이: {emoji_map[bot_choice]}  {interaction.user.display_name}: {emoji_map[user_choice]}\n\n"
-            f"{result}"
+    async def rps(self, interaction: Interaction):
+        """버튼으로 가위바위보를 시작합니다."""
+        view = RPSView(interaction.user, self.bot)
+        await interaction.response.send_message(
+            f"{interaction.user.mention} 가위바위보! 버튼을 눌러 선택하세요.",
+            view=view, allowed_mentions=AllowedMentions.none()
         )
-        await interaction.response.send_message(text, allowed_mentions=None)
 
     async def cog_app_command_error(self, interaction: Interaction, error: app_commands.AppCommandError):
         # Handle cooldowns
