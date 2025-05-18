@@ -1,4 +1,4 @@
-# cogs/casino.py new
+# cogs/casino.py rps update
 
 import discord
 
