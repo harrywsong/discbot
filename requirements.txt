@@ -1,0 +1,7 @@
+discord.py>=2.3.0
+asyncpg
+pytz
+flask
+pillow
+python-dotenv
+matplotlib>=3.8
