@@ -1,3 +1,5 @@
+#shop_features.py new
+
 import discord
 import asyncio
 import traceback

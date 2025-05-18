@@ -1,4 +1,4 @@
-# cogs/crash_game.py
+# cogs/crash_game.py new
 import os
 import asyncio
 import random

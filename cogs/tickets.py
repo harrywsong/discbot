@@ -1,4 +1,4 @@
-# cogs/tickets.py
+# cogs/tickets.py new
 
 import discord
 from discord.ext import commands

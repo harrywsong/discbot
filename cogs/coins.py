@@ -1,4 +1,4 @@
-# cogs/coins.py
+# cogs/coins.py new
 
 import discord
 from discord.ext import commands
