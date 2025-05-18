@@ -83,9 +83,26 @@ class DailyXPView(View):
         )
 
 async def grant_xp(bot: commands.Bot, user: discord.Member, amount: int):
-    # double if they hold the XP Booster role
-    if discord.utils.get(user.roles, name="XP Booster"):
+    # ─── 쿠폰 체크 & 로깅 ───────────────────────────────
+    base_amount = amount
+    has_booster = discord.utils.get(user.roles, name="XP Booster") is not None
+    if has_booster:
         amount *= 2
+
+    # 로그에 2x 쿠폰 적용 여부 반영
+    if has_booster:
+        await log_to_channel(
+            bot,
+            f"✨ {user.display_name}님이 {base_amount} XP (2x 쿠폰 적용) → 총 {amount} XP 획득"
+        )
+    else:
+        await log_to_channel(
+            bot,
+            f"✨ {user.display_name}님이 {amount} XP 획득"
+        )
+    # ─────────────────────────────────────────────────────
+
+    # 기존 DB 갱신 로직
     row = await bot.db.fetchrow("SELECT xp, level FROM xp WHERE user_id = $1", user.id)
     xp, lvl = (row["xp"], row["level"]) if row else (0, 0)
 
@@ -184,18 +201,17 @@ class XPSystem(commands.Cog):
     async def on_voice_state_update(self, member: discord.Member, before, after):
         now = datetime.now(timezone.utc)
 
+        # 음성 종료 시
         if before.channel and (not after.channel or after.channel.id != before.channel.id):
             start = voice_session_starts.pop(member.id, None)
             if start:
                 minutes = int((now - start).total_seconds() // 60)
                 if minutes > 0:
-                    earned = minutes * VOICE_XP_PER_MIN
-                    await log_to_channel(
-                        self.bot,
-                        f"🗣️ {member.display_name}님이 음성 {minutes}분 → {earned} XP 획득"
-                    )
-                    await grant_xp(self.bot, member, earned)
+                    earned_base = minutes * VOICE_XP_PER_MIN
+                    # grant_xp 내부에서 2x 쿠폰 여부까지 로깅됩니다
+                    await grant_xp(self.bot, member, earned_base)
 
+        # 음성 시작 시
         if after.channel and (not before.channel or before.channel.id != after.channel.id):
             voice_session_starts[member.id] = now
 

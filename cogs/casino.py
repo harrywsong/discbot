@@ -284,7 +284,7 @@ class Casino(commands.Cog):
     @app_commands.describe(bet="베팅할 코인 수")
     @channel_only(config.BLACKJACK_CHANNEL_ID)
     async def blackjack(self, interaction: Interaction, bet: int):
-        await log_to_channel(self.bot, f"{interaction.user.name}님 블랙잭 베팅 {bet}코인 시도")
+        await log_to_channel(self.bot, f"{interaction.user.display_name}님 블랙잭 베팅 {bet}코인 시도")
         # 1) 잔액 체크
         row = await self.bot.db.fetchrow(
             "SELECT balance FROM coins WHERE user_id = $1",
@@ -393,7 +393,7 @@ class Casino(commands.Cog):
         # 9) 히트 콜백
         async def hit_cb(i: Interaction):
             if i.user != player:
-                return await i.response.send_message("❌ 당신만 사용할 수 있습니다.", ephemeral=True)
+                return await i.response.send_message("❌ 본인만 사용할 수 있습니다.", ephemeral=True)
             hands[current].append(deck.pop())
             values[current] = hand_value(hands[current])
             await update_embed()
@@ -405,7 +405,7 @@ class Casino(commands.Cog):
         async def stand_cb(i: Interaction):
             nonlocal current, dealer_val
             if i.user != player:
-                return await i.response.send_message("❌ 당신만 사용할 수 있습니다.", ephemeral=True)
+                return await i.response.send_message("❌ 본인만 사용할 수 있습니다.", ephemeral=True)
             # 스플릿 중 다음 핸드 있으면 이동
             if len(hands) > 1 and current < len(hands) - 1:
                 current += 1
@@ -456,7 +456,7 @@ class Casino(commands.Cog):
 
             # 1) 권한 확인
             if i.user != player:
-                return await i.response.send_message("❌ 당신만 사용할 수 있습니다.", ephemeral=True)
+                return await i.response.send_message("❌ 본인만 사용할 수 있습니다.", ephemeral=True)
 
             # 2) 첫 2장 전용
             if len(hands[current]) != 2:
@@ -524,7 +524,7 @@ class Casino(commands.Cog):
         # 12) 스플릿 콜백
         async def split_cb(i: Interaction):
             if i.user != player:
-                return await i.response.send_message("❌ 당신만 사용할 수 있습니다.", ephemeral=True)
+                return await i.response.send_message("❌ 본인만 사용할 수 있습니다.", ephemeral=True)
             if len(hands) > 1:
                 return await i.response.send_message("ℹ️ 이미 스플릿되었습니다.", ephemeral=True)
 
@@ -680,7 +680,7 @@ class Casino(commands.Cog):
         if user_choice == bot_choice:
             result, delta = "⚖️ 무승부! 코인은 변동 없습니다.", 0
         elif wins[user_choice] == bot_choice:
-            result, delta = "🏆 당신의 승리! +2 코인", 2
+            result, delta = "🏆 승리! +2 코인", 2
         else:
             result, delta = "❌ 패배... 다음 기회에!", 0
 
@@ -698,7 +698,7 @@ class Casino(commands.Cog):
         emoji_map = {"rock": "✊", "paper": "🖐️", "scissors": "✌️"}
         text = (
             f"**숯검댕이** 🆚 **{interaction.user.display_name}**\n\n"
-            f"숯검댕이: {emoji_map[bot_choice]}  당신: {emoji_map[user_choice]}\n\n"
+            f"숯검댕이: {emoji_map[bot_choice]}  {interaction.user.display_name}: {emoji_map[user_choice]}\n\n"
             f"{result}"
         )
         await interaction.response.send_message(text, allowed_mentions=None)

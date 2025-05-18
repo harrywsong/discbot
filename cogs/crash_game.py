@@ -247,7 +247,7 @@ class CrashRound:
                 try:
                     await log_to_channel(
                         self.bot,
-                        f"{m.mention}님 베팅 {bet}코인 → 결과: {result}, {net}코인"
+                        f"{m.display_name}님 베팅 {bet}코인 → 결과: {result}, {net}코인"
                     )
                 except Exception:
                     pass

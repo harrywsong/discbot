@@ -292,7 +292,7 @@ class CustomGame(commands.Cog):
             mentions = " ".join(p.mention for p in view.participants if isinstance(p, discord.Member))
             if mentions:
                 await view.interaction.channel.send(f"⏰ 내전 시작 30분 전입니다!\n {mentions}\n이제부터 취소 불가합니다.")
-            await log_to_channel(self.bot, "30분 전 경고 발송")
+            await log_to_channel(self.bot, "내전 30분 전 경고 발송")
 
     async def _monitor_voice_check(self, view: CustomGameView):
         """Checks at 10/5/1 minutes to ping users not in VC."""
