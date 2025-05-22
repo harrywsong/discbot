@@ -139,3 +139,7 @@ RPC_CHANNEL_ID            = get_int("RPC_CHANNEL_ID")
 STORE_ROLE_ID             = get_int("STORE_ROLE_ID")
 CRASH_NOTIFY_USER_ID      = get_int("CRASH_NOTIFY_USER_ID")
 ROULETTE_CHANNEL_ID       = get_int("ROULETTE_CHANNEL_ID")
+
+ENTRY_BUTTON_CHANNEL_ID = int(os.getenv("ENTRY_BUTTON_CHANNEL_ID", "0"))
+ENTRY_LOG_CHANNEL_ID    = int(os.getenv("ENTRY_LOG_CHANNEL_ID",    "0"))
+UNVERIFIED_ROLE_ID      = int(os.getenv("UNVERIFIED_ROLE_ID",      "0"))
