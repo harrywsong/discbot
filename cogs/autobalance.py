@@ -17,11 +17,9 @@ def balance_teams(
     sum_b = 0
     for member, rank in sorted(ranks.items(), key=lambda kv: kv[1], reverse=True):
         if sum_a <= sum_b:
-            team_a.append(member)
-            sum_a += rank
+            team_a.append(member); sum_a += rank
         else:
-            team_b.append(member)
-            sum_b += rank
+            team_b.append(member); sum_b += rank
     return team_a, team_b
 
 class AutoBalanceCog(commands.Cog):
@@ -35,8 +33,8 @@ class AutoBalanceCog(commands.Cog):
         self.gc = gspread.authorize(creds)
 
         sheet_id = os.getenv("VALO_SHEET_ID")
-        # If your tab isn't literally "Ranks", either rename it or use get_worksheet(0)
-        self.ws = self.gc.open_by_key(sheet_id).worksheet("Ranks")
+        # Instead of worksheet("Ranks"), just grab the first tab:
+        self.ws = self.gc.open_by_key(sheet_id).get_worksheet(0)
 
     def get_tier_for_member(self, member: discord.Member) -> Optional[int]:
         try:
@@ -52,11 +50,9 @@ class AutoBalanceCog(commands.Cog):
 
     @app_commands.command(
         name="tier",
-        description="📊 발로란트 티어 룩업 (등록된 디코 ID → 시트에서 읽습니다)"
+        description="📊 발로란트 티어 룩업 (디코 ID → 시트에서 읽기)"
     )
-    @app_commands.describe(
-        member="대상 유저 (기본값: 본인)"
-    )
+    @app_commands.describe(member="대상 유저 (기본: 본인)")
     async def slash_tier(
         self,
         interaction: discord.Interaction,
@@ -66,7 +62,7 @@ class AutoBalanceCog(commands.Cog):
         tier = self.get_tier_for_member(member)
         if tier is None:
             await interaction.response.send_message(
-                "❌ 시트에 등록된 정보가 없거나, 티어가 비어 있습니다.",
+                "❌ 시트에 등록된 정보가 없거나 티어를 찾을 수 없습니다.",
                 ephemeral=True
             )
         else:
@@ -79,7 +75,7 @@ class AutoBalanceCog(commands.Cog):
         description="🔀 시트 기반으로 팀 자동 균형 조정"
     )
     @app_commands.describe(
-        mentions="공백으로 구분된 멘션을 입력하세요: @User1 @User2 @User3 …"
+        mentions="공백으로 구분된 멘션: @User1 @User2 …"
     )
     async def slash_autobalance(
         self,
@@ -88,7 +84,7 @@ class AutoBalanceCog(commands.Cog):
     ):
         ids = re.findall(r"<@!?(\d+)>", mentions)
         members = [interaction.guild.get_member(int(i)) for i in ids]
-        members = [m for m in members if m is not None]
+        members = [m for m in members if m]
 
         if len(members) < 2:
             return await interaction.response.send_message(
@@ -127,5 +123,4 @@ class AutoBalanceCog(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
 async def setup(bot: commands.Bot):
-    # Just add the cog—decorators take care of registering slash commands.
     await bot.add_cog(AutoBalanceCog(bot))
