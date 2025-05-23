@@ -35,14 +35,10 @@ class AutoBalanceCog(commands.Cog):
         self.gc = gspread.authorize(creds)
 
         sheet_id = os.getenv("VALO_SHEET_ID")
-        self.ws = self.gc.open_by_key(sheet_id).get_worksheet(0)
+        # If your tab isn't literally "Ranks", either rename it or use get_worksheet(0)
+        self.ws = self.gc.open_by_key(sheet_id).worksheet("Ranks")
 
     def get_tier_for_member(self, member: discord.Member) -> Optional[int]:
-        """
-        1) Find the row where column A == the member's Discord ID
-        2) Read the pre-computed tier from column E
-        3) Return it as an int, or None if missing / non-integer
-        """
         try:
             cell = self.ws.find(str(member.id), in_column=1)
         except gspread.exceptions.CellNotFound:
@@ -54,9 +50,12 @@ class AutoBalanceCog(commands.Cog):
         except ValueError:
             return None
 
-    @app_commands.command(name="tier", description="📊 발로란트 티어 룩업")
+    @app_commands.command(
+        name="tier",
+        description="📊 발로란트 티어 룩업 (등록된 디코 ID → 시트에서 읽습니다)"
+    )
     @app_commands.describe(
-        member="어떤 유저를 찾아보겠습니까? (기본값: 당신 자신)"
+        member="대상 유저 (기본값: 본인)"
     )
     async def slash_tier(
         self,
@@ -67,7 +66,7 @@ class AutoBalanceCog(commands.Cog):
         tier = self.get_tier_for_member(member)
         if tier is None:
             await interaction.response.send_message(
-                "❌ 해당 유저의 시트 등록 또는 티어 정보가 없습니다.",
+                "❌ 시트에 등록된 정보가 없거나, 티어가 비어 있습니다.",
                 ephemeral=True
             )
         else:
@@ -77,7 +76,7 @@ class AutoBalanceCog(commands.Cog):
 
     @app_commands.command(
         name="autobalance",
-        description="🔀 Google Sheet 기반으로 팀 자동 균형 조정"
+        description="🔀 시트 기반으로 팀 자동 균형 조정"
     )
     @app_commands.describe(
         mentions="공백으로 구분된 멘션을 입력하세요: @User1 @User2 @User3 …"
@@ -87,12 +86,8 @@ class AutoBalanceCog(commands.Cog):
         interaction: discord.Interaction,
         mentions: str
     ):
-        # 멘션에서 ID만 추출
         ids = re.findall(r"<@!?(\d+)>", mentions)
-        members = [
-            interaction.guild.get_member(int(i))
-            for i in ids
-        ]
+        members = [interaction.guild.get_member(int(i)) for i in ids]
         members = [m for m in members if m is not None]
 
         if len(members) < 2:
@@ -132,7 +127,5 @@ class AutoBalanceCog(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
 async def setup(bot: commands.Bot):
-    cog = AutoBalanceCog(bot)
-    bot.tree.add_command(cog.slash_tier)
-    bot.tree.add_command(cog.slash_autobalance)
-    await bot.add_cog(cog)
+    # Just add the cog—decorators take care of registering slash commands.
+    await bot.add_cog(AutoBalanceCog(bot))
