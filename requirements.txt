@@ -7,3 +7,4 @@ python-dotenv
 matplotlib>=3.8
 gspread
 oauth2client
+google-api-python-client
