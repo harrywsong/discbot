@@ -123,8 +123,8 @@ class EntryPersistent(commands.Cog):
 
         # 3) send the embed + fresh view
         embed = discord.Embed(
-            title="🏹 Valorant 입장 시작",
-            description="아래 버튼을 눌러 입장 양식을 작성하세요.",
+            title="🎴 유곽의 문이 열립니다",
+            description="스튜디오에 입장을 시작합니다.\n아래 버튼을 눌러 입장 양식을 작성해 주세요.",
             color=discord.Color.blurple()
         )
         view = View(timeout=None)

@@ -5,3 +5,5 @@ flask
 pillow
 python-dotenv
 matplotlib>=3.8
+gspread
+oauth2client

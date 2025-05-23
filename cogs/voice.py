@@ -1,6 +1,7 @@
 # cogs/voice.py new
 
 import discord
+from discord import PermissionOverwrite
 from discord.ext import commands, tasks
 from datetime import datetime, timedelta, timezone
 from discord.utils import find
@@ -10,11 +11,11 @@ from utils.logger import log_to_channel
 
 created_channels: dict[int, datetime] = {}
 
-voice_channel_2_name = "🎗️ discord.gg/ourstudio"
+voice_channel_2_name = "📸️️ discord.gg/ourstudio"
 
 def get_channels(guild: discord.Guild):
     vc1 = find(lambda c: c.name.startswith("🟢"), guild.voice_channels)
-    vc2 = find(lambda c: c.name.startswith("🎗"), guild.voice_channels)
+    vc2 = find(lambda c: c.name.startswith("📸"), guild.voice_channels)
     vc3 = find(lambda c: c.name.startswith("👥"), guild.voice_channels)
     return vc1, vc2, vc3
 
@@ -75,7 +76,7 @@ class VoiceManager(commands.Cog):
     async def on_voice_state_update(self, member, before, after):
         now = datetime.now(timezone.utc)
 
-        # ── Auto-delete empty temp channel ──
+        # ── auto‑delete empty temp channels ──
         if before.channel and before.channel.id in created_channels:
             if len(before.channel.members) == 0:
                 try:
@@ -85,15 +86,40 @@ class VoiceManager(commands.Cog):
                 except Exception as e:
                     await log_to_channel(self.bot, f"❌ 채널 삭제 오류: {e}")
 
-        # ── Create new temp channel ──
+        # ── create new temp channel on join trigger ──
         if after.channel and after.channel.name == "🔊┆임시 음성채널 생성":
-            category = after.channel.category or member.guild.categories[0]
-            new_channel = await member.guild.create_voice_channel(
-                f"🔊┆{member.display_name}님의 스튜디오", category=category,
-                overwrites={
-                    member.guild.default_role: discord.PermissionOverwrite(connect=True),
-                    member: discord.PermissionOverwrite(manage_channels=True, move_members=True)
-                }
+            guild = member.guild
+
+            # 1) fetch your “view” role
+            view_role = guild.get_role(config.TEMP_VOICE_VIEW_ROLE_ID)
+
+            # 2) deny @everyone from seeing it…
+            overwrites: dict[discord.abc.Snowflake, PermissionOverwrite] = {
+                guild.default_role: PermissionOverwrite(view_channel=False)
+            }
+
+            # 3) grant view/connect to view_role and any role above it
+            if view_role:
+                threshold = view_role.position
+                for role in guild.roles:
+                    if role.position >= threshold:
+                        overwrites[role] = PermissionOverwrite(view_channel=True, connect=True)
+
+            # 4) always allow the channel’s creator full access
+            overwrites[member] = PermissionOverwrite(
+                view_channel=True,
+                connect=True,
+                manage_channels=True,
+                move_members=True
+            )
+
+            # 5) create, move member, and record
+            category = after.channel.category or guild.categories[0]
+            new_channel = await guild.create_voice_channel(
+                name=f"🔊┆{member.display_name}님의 스튜디오",
+                category=category,
+                overwrites=overwrites,
+                reason="임시 음성채널 생성"
             )
             await member.move_to(new_channel)
             created_channels[new_channel.id] = now
