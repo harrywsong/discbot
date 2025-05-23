@@ -35,7 +35,7 @@ class AutoBalanceCog(commands.Cog):
         self.gc = gspread.authorize(creds)
 
         sheet_id = os.getenv("VALO_SHEET_ID")
-        self.ws = self.gc.open_by_key(sheet_id).worksheet("Ranks")
+        self.ws = self.gc.open_by_key(sheet_id).get_worksheet(0)
 
     def get_tier_for_member(self, member: discord.Member) -> Optional[int]:
         """
