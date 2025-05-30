@@ -194,7 +194,7 @@ class AutoBalanceCog(commands.Cog):
             )
 
         team_a, team_b = balance_teams(ranks)
-        embed = discord.Embed(title="🔀 Auto‑Balanced Teams")
+        embed = discord.Embed(title="🔀 내전 팀 오토밸런스")
         embed.add_field(
             name=f"Team A (총합 {len(team_a)})",
             value="\n".join(f"{member.mention} • {ranks[member]}" for member in team_a),
