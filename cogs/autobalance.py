@@ -1,14 +1,16 @@
 # cogs/autobalance.py
 import os
 import re
-import asyncio
+
 import aiohttp
 import discord
-from discord import app_commands, ui, ButtonStyle, Interaction
+from discord import app_commands, ui, ButtonStyle, Interaction, Member
 from discord.ext import commands
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from typing import Optional, Tuple, List
+
+from typing import Optional
 
 TEAM_A_VC_ID = 1333666313066905640
 TEAM_B_VC_ID = 1333666377743073372
@@ -32,66 +34,57 @@ def balance_teams(
             team_b.append(member); sum_b += val
     return team_a, team_b
 
-class MoveTeamsView(ui.View):
-    def __init__(self, team_a: List[discord.Member], team_b: List[discord.Member]):
+class MoveTeamsView(discord.ui.View):
+    def __init__(self, team_a_members, team_b_members):
         super().__init__(timeout=None)
-        self.team_a = team_a
-        self.team_b = team_b
+        self.team_a_members = team_a_members
+        self.team_b_members = team_b_members
 
-    async def on_error(self, interaction: discord.Interaction, error: Exception, item: ui.Item):
-        # signature is (self, interaction, error, item)
-        await interaction.response.send_message(
-            f"⚠️ 버튼 처리 중 오류: `{error}`", ephemeral=True
-        )
-
-    @ui.button(label="A팀 보이스로 이동", style=ButtonStyle.primary, custom_id="move_team_a")
-    async def move_team_a(self, interaction: discord.Interaction, button: ui.Button):
-        # correct order: (self, interaction, button)
-        await interaction.response.defer(ephemeral=True)
-        try:
-            vc = interaction.guild.get_channel(TEAM_A_VC_ID)
-            if not isinstance(vc, discord.VoiceChannel):
-                raise RuntimeError("Team A voice channel not found")
-
-            moved = []
-            for member in self.team_a:
+    @discord.ui.button(label="A팀 보이스로 이동", style=discord.ButtonStyle.primary)
+    async def move_team_a(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.get_channel(TEAM_A_VC_ID)
+        moved = []
+        for m in self.team_a_members:
+            if hasattr(m, "id"):  # Only real users, skip fake users
                 try:
-                    await member.move_to(vc)
-                    moved.append(member.mention)
-                except:
+                    await m.move_to(vc)
+                    moved.append(m.mention)
+                except Exception:
                     pass
+        msg = "A팀 이동 완료:\n" + "\n".join(moved) if moved else "이동할 인원이 없습니다."
+        await interaction.response.send_message(msg)
 
-            text = "A팀으로 이동:\n" + "\n".join(moved) if moved else "A팀에서 이동할 사람이 더이상 없습니다."
-        except Exception as e:
-            text = f"⚠️ Team A 이동 오류: `{e}`"
-
-        await interaction.followup.send(text, ephemeral=True)
-
-    @ui.button(label="B팀 보이스로 이동", style=ButtonStyle.secondary, custom_id="move_team_b")
-    async def move_team_b(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        try:
-            vc = interaction.guild.get_channel(TEAM_B_VC_ID)
-            if not isinstance(vc, discord.VoiceChannel):
-                raise RuntimeError("Team B voice channel not found")
-
-            moved = []
-            for member in self.team_b:
+    @discord.ui.button(label="B팀 보이스로 이동", style=discord.ButtonStyle.secondary)
+    async def move_team_b(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.get_channel(TEAM_B_VC_ID)
+        moved = []
+        for m in self.team_b_members:
+            if hasattr(m, "id"):
                 try:
-                    await member.move_to(vc)
-                    moved.append(member.mention)
-                except:
+                    await m.move_to(vc)
+                    moved.append(m.mention)
+                except Exception:
                     pass
+        msg = "B팀 이동 완료:\n" + "\n".join(moved) if moved else "이동할 인원이 없습니다."
+        await interaction.response.send_message(msg)
 
-            text = "B팀 보이스로 이동:\n" + "\n".join(moved) if moved else "B팀에서 이동할 사람이 더이상 없습니다."
-        except Exception as e:
-            text = f"⚠️ Team B 이동 오류: `{e}`"
-
-        await interaction.followup.send(text, ephemeral=True)
 
 class AutoBalanceCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+        async def henrik_get(self, endpoint: str) -> Optional[dict]:
+            base = "https://api.henrikdev.xyz"
+            headers = {"Authorization": os.getenv("HENRIK_API_KEY")}
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(base + endpoint, headers=headers) as resp:
+                    print(f"[Henrik] {resp.status} {endpoint}")
+                    if resp.status == 200:
+                        return await resp.json()
+                    else:
+                        print(f"Henrik API error: {resp.status} - {await resp.text()}")
+                        return None
 
         creds_path = os.getenv("GOOGLE_CREDS_JSON")
         if not creds_path or not os.path.isfile(creds_path):
@@ -137,77 +130,107 @@ class AutoBalanceCog(commands.Cog):
                 except:
                     return text.strip()
 
-    @app_commands.command(name="autobalance", description="🔀 2–10명 팀 자동 균형 (멘션으로 지정)")
-    @app_commands.describe(
-        m1="Player 1 (required)",
-        m2="Player 2 (required)",
-        m3="Player 3 (optional)",
-        m4="Player 4 (optional)",
-        m5="Player 5 (optional)",
-        m6="Player 6 (optional)",
-        m7="Player 7 (optional)",
-        m8="Player 8 (optional)",
-        m9="Player 9 (optional)",
-        m10="Player 10 (optional)"
+    @app_commands.command(
+        name="오토밸런스",
+        description="내전 참가자 또는 직접 입력한 명단을 기반으로 팀 밸런싱을 자동으로 해줍니다."
     )
+    @app_commands.describe(
+        m1="1번 참가자 (@멘션)", m2="2번 참가자", m3="3번 참가자", m4="4번 참가자", m5="5번 참가자",
+        m6="6번 참가자", m7="7번 참가자", m8="8번 참가자", m9="9번 참가자", m10="10번 참가자"
+    )
+    @commands.has_permissions(administrator=True)
     async def slash_autobalance(
-        self,
-        interaction: discord.Interaction,
-        m1: discord.Member,
-        m2: discord.Member,
-        m3: discord.Member = None,
-        m4: discord.Member = None,
-        m5: discord.Member = None,
-        m6: discord.Member = None,
-        m7: discord.Member = None,
-        m8: discord.Member = None,
-        m9: discord.Member = None,
-        m10: discord.Member = None
+            self,
+            interaction: Interaction,
+            m1: Optional[discord.Member] = None,
+            m2: Optional[discord.Member] = None,
+            m3: Optional[discord.Member] = None,
+            m4: Optional[discord.Member] = None,
+            m5: Optional[discord.Member] = None,
+            m6: Optional[discord.Member] = None,
+            m7: Optional[discord.Member] = None,
+            m8: Optional[discord.Member] = None,
+            m9: Optional[discord.Member] = None,
+            m10: Optional[discord.Member] = None
     ):
-        members = [m for m in (m1,m2,m3,m4,m5,m6,m7,m8,m9,m10) if m]
-        await interaction.response.defer(thinking=True)
+        await interaction.response.defer(ephemeral=True)
 
-        ranks: dict[discord.Member, str] = {}
-        not_found: List[str] = []
-        for m in members:
-            info = await self.bot.loop.run_in_executor(None, self.find_riot_info, m)
-            if not info:
-                not_found.append(m.mention)
-                continue
-            riot_name, riot_tag = info
-            try:
-                tier = await self.call_get_tier(riot_name, riot_tag)
-            except Exception as e:
-                return await interaction.followup.send(
-                    f"⚠️ `{m.display_name}` 조회 오류: `{e}`", ephemeral=True
-                )
-            if not tier:
-                not_found.append(m.mention)
-            else:
-                ranks[m] = tier
+        input_members = [m for m in [m1, m2, m3, m4, m5, m6, m7, m8, m9, m10] if m]
+        player_infos = []
+        riotid_to_member = {}
 
-        if not_found:
-            return await interaction.followup.send(
-                "❌ 다음 유저들의 티어를 가져올 수 없습니다:\n"
-                + " ".join(not_found),
-                ephemeral=True
-            )
+        if input_members:
+            print(f"[LOG] Manual input: {len(input_members)} members: {[m.display_name for m in input_members]}")
+            async with self.bot.db.acquire() as conn:
+                for member in input_members:
+                    row = await conn.fetchrow(
+                        "SELECT visible_mmr, riot_name, riot_tag FROM players WHERE discord_id = $1", str(member.id))
+                    if not row:
+                        await interaction.followup.send(f"❌ {member.display_name}: DB에서 정보를 찾을 수 없습니다.", ephemeral=True)
+                        return
+                    riotid = f"{row['riot_name']}#{row['riot_tag']}"
+                    player_infos.append({"riotid": riotid, "mmr": row['visible_mmr']})
+                    riotid_to_member[riotid] = member
+        else:
+            current_custom_game = getattr(self.bot, "current_custom_game", None)
+            print(f"[LOG] current_custom_game: {current_custom_game}")
 
-        team_a, team_b = balance_teams(ranks)
-        embed = discord.Embed(title="🔀 내전 팀 오토밸런스")
-        embed.add_field(
-            name=f"Team A (총합 {len(team_a)})",
-            value="\n".join(f"{member.mention} • {ranks[member]}" for member in team_a),
-            inline=True
+            if not current_custom_game or not hasattr(current_custom_game, "participants"):
+                await interaction.followup.send("❌ 활성화된 내전 참가자를 찾을 수 없습니다.", ephemeral=True)
+                print("[LOG] current_custom_game missing or has no participants")
+                return
+
+            print(f"[LOG] Number of participants: {len(current_custom_game.participants)}")
+            for idx, p in enumerate(current_custom_game.participants, 1):
+                print(f"[LOG] 참가자 {idx}: {p} (ID: {getattr(p, 'id', None)})")
+
+            if len(current_custom_game.participants) != 10:
+                await interaction.followup.send("❌ 참가자 10명이 필요합니다.", ephemeral=True)
+                return
+
+            async with self.bot.db.acquire() as conn:
+                for user in current_custom_game.participants:
+                    if hasattr(user, "display_name") and not hasattr(user, "id"):
+                        # FakeUser
+                        player_infos.append({"riotid": user.display_name, "mmr": 1})
+                        continue
+                    # Real users
+                    row = await conn.fetchrow(
+                        "SELECT visible_mmr, riot_name, riot_tag FROM players WHERE discord_id = $1", str(user.id))
+                    if not row:
+                        await interaction.followup.send(f"❌ {user.display_name} 님: DB에서 정보를 찾을 수 없습니다.", ephemeral=True)
+                        return
+                    riotid = f"{row['riot_name']}#{row['riot_tag']}"
+                    player_infos.append({"riotid": riotid, "mmr": row['visible_mmr']})
+                    riotid_to_member[riotid] = user
+
+        from itertools import combinations
+        best_diff = float('inf')
+        best_team_a = []
+        best_team_b = []
+        for team_a in combinations(player_infos, 5):
+            team_b = [p for p in player_infos if p not in team_a]
+            diff = abs(sum(p["mmr"] for p in team_a) - sum(p["mmr"] for p in team_b))
+            if diff < best_diff:
+                best_diff = diff
+                best_team_a = list(team_a)
+                best_team_b = list(team_b)
+
+        def pretty(team):
+            return "\n".join([f"{p['riotid']} (MMR: {p['mmr']})" for p in team])
+
+        # Get real members for buttons
+        team_a_members = [riotid_to_member.get(p['riotid']) for p in best_team_a if riotid_to_member.get(p['riotid'])]
+        team_b_members = [riotid_to_member.get(p['riotid']) for p in best_team_b if riotid_to_member.get(p['riotid'])]
+
+        embed = discord.Embed(
+            title="✅ 자동 팀 밸런스 결과",
+            description=f"최종 팀 차이: **{best_diff}**\n\n"
+                        f"**팀 A:**\n{pretty(best_team_a)}\n\n**팀 B:**\n{pretty(best_team_b)}",
+            color=discord.Color.green()
         )
-        embed.add_field(
-            name=f"Team B (총합 {len(team_b)})",
-            value="\n".join(f"{member.mention} • {ranks[member]}" for member in team_b),
-            inline=True
-        )
-
-        view = MoveTeamsView(team_a, team_b)
-        await interaction.followup.send(embed=embed, view=view)
+        view = MoveTeamsView(team_a_members, team_b_members)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AutoBalanceCog(bot))

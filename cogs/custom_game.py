@@ -2,6 +2,8 @@
 
 import asyncio
 import random
+from typing import Optional
+
 import pytz
 
 import discord
@@ -203,7 +205,7 @@ class CustomGame(commands.Cog):
 
         # 2) Immediately confirm to the user
         await interaction.response.send_message(
-            "✅ 커스텀 내전이 시작되었습니다! 채널에서 참가 버튼을 확인하세요.",
+            "✅ 발로란트 내전이 열렸습니다! 채널에서 참가 버튼을 확인하세요.",
             ephemeral=True
         )
 
@@ -250,7 +252,7 @@ class CustomGame(commands.Cog):
 
             channel = interaction.channel
             lobby_embed = discord.Embed(
-                title="🕹️ 발로란트 커스텀",
+                title="🕹️ 발로란트 내전",
                 description=view.format_description(),
                 color=discord.Color.green()
             )
@@ -264,14 +266,14 @@ class CustomGame(commands.Cog):
             self.bot.add_view(view, message_id=lobby_msg.id)
 
             # 8) Activate global state & scheduled tasks
-            global current_custom_game
-            current_custom_game = view
+            self.bot.current_custom_game = view  # <-- Save to the bot object for global access
+
             view.warning_task = asyncio.create_task(self._warning_30min(view))
             asyncio.create_task(self._monitor_voice_check(view))
 
             await log_to_channel(
                 self.bot,
-                f"{interaction.user.display_name}님이 내전을 시작했습니다:\n{display}"
+                f"{interaction.user.display_name}님이 내전을 열었습니다:\n{display}"
             )
 
         except Exception as e:
@@ -323,16 +325,80 @@ class CustomGame(commands.Cog):
                     await log_to_channel(self.bot, f"{mark}분 전 알림 발송")
             await asyncio.sleep(30)
 
-    @app_commands.command(name="내전종료", description="현재 내전을 강제 종료합니다.")
-    async def slash_end_custom(self, interaction: discord.Interaction):
-        global current_custom_game
-        if not current_custom_game:
-            return await interaction.response.send_message("❌ 진행 중인 내전이 없습니다.", ephemeral=True)
-        if not is_privileged(interaction.user, current_custom_game.creator):
-            return await interaction.response.send_message("❌ 권한이 없습니다.", ephemeral=True)
-        await interaction.channel.purge(limit=100)
-        await interaction.channel.send("✅ **내전이 종료되었습니다.**")
-        current_custom_game = None
+    @app_commands.command(
+        name="내전종료",
+        description="내전 종료하고, 참가한 모든 유저의 MMR을 업데이트합니다."
+    )
+    @app_commands.describe(region_hint="(선택) 지역(na/eu/kr 등)")
+    async def slash_close_customs(self, interaction: discord.Interaction, region_hint: Optional[str] = "na"):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            user = interaction.user
+            async with self.bot.db.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT riot_name, riot_tag, puuid FROM players WHERE discord_id = $1",
+                    str(user.id))
+            if not row:
+                await interaction.followup.send("❌ Riot account not linked. Use `/연동` first.", ephemeral=True)
+                return
+
+            puuid = row["puuid"]
+
+            # 1. Fetch last 5 custom matches
+            endpoint = f"/valorant/v3/by-puuid/matches/{region_hint}/{puuid}?filter=custom"
+            data = await self.henrik_get(endpoint)
+            if not data or data.get("status") != 200 or not data.get("data"):
+                await interaction.followup.send("❌ Could not fetch recent custom matches.", ephemeral=True)
+                return
+
+            matches = data["data"][:5]
+            if not matches:
+                await interaction.followup.send("⚠️ No recent custom matches found.", ephemeral=True)
+                return
+
+            processed_count = 0
+            already_analyzed = 0
+            error_matches = []
+
+            for match in matches:
+                meta = match.get("metadata", {})
+                match_id = meta.get("matchid", None)
+                if not match_id:
+                    continue
+                # 2. Check if already analyzed
+                async with self.bot.db.acquire() as conn:
+                    exists = await conn.fetchval(
+                        "SELECT 1 FROM analyzed_matches WHERE match_id = $1", match_id)
+                if exists:
+                    already_analyzed += 1
+                    continue
+
+                # 3. Analyze: process and update MMR for all involved
+                try:
+                    # Use your method (can adapt for custom games if needed)
+                    await self.process_and_store_match(match_id, region_hint)
+                    async with self.bot.db.acquire() as conn:
+                        await conn.execute(
+                            "INSERT INTO analyzed_matches (match_id) VALUES ($1)", match_id)
+                    processed_count += 1
+                except Exception as e:
+                    error_matches.append(match_id)
+                    print(f"Error analyzing match {match_id}: {e}")
+                    continue
+
+            # 4. Respond with summary
+            message = (
+                f"✅ 내전 종료 완료!\n"
+                f"분석한 내전 수: `{processed_count}`\n"
+                f"이미 분석된 내전 수: `{already_analyzed}`"
+            )
+            if error_matches:
+                message += f"\n분석 실패한 매치: {', '.join(error_matches)}"
+
+            await interaction.followup.send(message, ephemeral=True)
+
+        except Exception as e:
+            await interaction.followup.send(f"❌ Unexpected error: {e}", ephemeral=True)
 
     @app_commands.command(name="맵추첨", description="랜덤 맵을 뽑습니다.")
     async def slash_roll_map(self, interaction: discord.Interaction):
@@ -357,7 +423,9 @@ class CustomGame(commands.Cog):
         await interaction.response.send_message("✅ 대기열이 활성화되었습니다.", ephemeral=True)
 
     @app_commands.command(name="봇추가", description="빈 자리에 가짜 유저를 추가합니다.")
+    @commands.has_permissions(administrator=True)
     async def slash_add_bots(self, interaction: discord.Interaction):
+        current_custom_game = getattr(self.bot, "current_custom_game", None)
         if not current_custom_game:
             return await interaction.response.send_message("❌ 활성 내전이 없습니다.", ephemeral=True)
         needed = 10 - len(current_custom_game.participants)
@@ -365,7 +433,7 @@ class CustomGame(commands.Cog):
             current_custom_game.participants.append(FakeUser(f"플레이어{i}"))
         current_custom_game.rebuild_buttons()
         await current_custom_game.update_embed()
-        await interaction.response.send_message(f"✅ 가짜 유저 {needed-1}명 추가되었습니다.", ephemeral=True)
+        await interaction.response.send_message(f"✅ 가짜 유저 {needed - 2}명 추가되었습니다.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

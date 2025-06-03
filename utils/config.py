@@ -125,6 +125,8 @@ DAILY_COINS_AMOUNT          = int(os.getenv("DAILY_COINS_AMOUNT", "100"))
 # dynamic message IDs (initialized None)
 DAILY_COINS_MESSAGE_ID      = None
 COIN_LEADERBOARD_MESSAGE_ID = None
+MMR_LEADERBOARD_MESSAGE_ID=None
+
 
 # 익명 게시판에 올릴 공개 채널
 ANON_BOARD_CHANNEL_ID = int(os.getenv("ANON_BOARD_CHANNEL_ID", 0))
