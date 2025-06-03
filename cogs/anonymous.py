@@ -4,6 +4,7 @@ import discord
 from discord.ext import commands
 from utils import config
 from utils.logger import log_to_channel
+from utils.henrik import henrik_get
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MiB
 ALLOWED_EXT = {

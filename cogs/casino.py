@@ -14,6 +14,7 @@ from discord.ui import View, Button
 from utils import config
 from utils.logger import log_to_channel
 from PIL import Image, ImageDraw
+from utils.henrik import henrik_get
 
 # 실제 유럽식 룰렛의 빨강 번호 집합
 RED_NUMBERS = {

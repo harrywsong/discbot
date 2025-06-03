@@ -14,6 +14,7 @@ from discord.ui import View, Button
 from utils import config
 from utils.logger import log_to_channel
 from datetime import datetime, timezone
+from utils.henrik import henrik_get
 
 
 # cogs/crash_game.py is in cogs/, so two levels up is project root

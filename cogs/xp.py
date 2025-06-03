@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from utils import config
 from utils.logger import log_to_channel
+from utils.henrik import henrik_get
 
 # ─── XP SETTINGS ────────────────────────────────────
 VOICE_XP_PER_MIN     = 1

@@ -9,6 +9,7 @@ import asyncio
 
 from utils import config
 from utils.logger import log_to_channel
+from utils.henrik import henrik_get
 
 class DailyCoinsView(discord.ui.View):
     def __init__(self, bot: commands.Bot):

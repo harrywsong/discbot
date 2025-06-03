@@ -1,6 +1,7 @@
 # cogs/autobalance.py
 import os
 import re
+from utils.henrik import henrik_get
 
 import aiohttp
 import discord
@@ -153,7 +154,7 @@ class AutoBalanceCog(commands.Cog):
             m9: Optional[discord.Member] = None,
             m10: Optional[discord.Member] = None
     ):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
         input_members = [m for m in [m1, m2, m3, m4, m5, m6, m7, m8, m9, m10] if m]
         player_infos = []
@@ -230,7 +231,7 @@ class AutoBalanceCog(commands.Cog):
             color=discord.Color.green()
         )
         view = MoveTeamsView(team_a_members, team_b_members)
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        await interaction.followup.send(embed=embed, view=view)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AutoBalanceCog(bot))

@@ -9,6 +9,7 @@ from datetime import datetime
 import urllib.parse
 from typing import Optional
 from utils import config
+from utils.henrik import henrik_get
 
 import discord
 from discord.ext import tasks
@@ -114,7 +115,6 @@ class ValorantMMRCog(commands.Cog):
         headers = {"Authorization": HENRIK_API_KEY}
         async with aiohttp.ClientSession() as session:
             async with session.get(base + endpoint, headers=headers) as resp:
-                await log_to_channel(self.bot, f"[Henrik] {resp.status} {endpoint}")
                 if resp.status == 200:
                     return await resp.json()
                 else:

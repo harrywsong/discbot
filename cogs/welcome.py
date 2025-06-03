@@ -11,6 +11,7 @@ import traceback
 import asyncio
 
 from utils import config
+from utils.henrik import henrik_get
 
 BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
 BG_PATH      = os.path.join(BASE_DIR, "..", "assets", "welcome_bg.png")

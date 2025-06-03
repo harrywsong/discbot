@@ -10,6 +10,7 @@ from discord.ui import View, Modal, TextInput, Button
 
 from utils import config
 from utils.logger import log_to_channel
+from utils.henrik import henrik_get
 
 
 class BetModal(Modal):

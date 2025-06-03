@@ -3,6 +3,7 @@
 import asyncio
 import random
 from typing import Optional
+from utils.henrik import henrik_get
 
 import pytz
 
@@ -346,7 +347,7 @@ class CustomGame(commands.Cog):
 
             # 1. Fetch last 5 custom matches
             endpoint = f"/valorant/v3/by-puuid/matches/{region_hint}/{puuid}?filter=custom"
-            data = await self.henrik_get(endpoint)
+            data = await henrik_get(endpoint)
             if not data or data.get("status") != 200 or not data.get("data"):
                 await interaction.followup.send("❌ Could not fetch recent custom matches.", ephemeral=True)
                 return

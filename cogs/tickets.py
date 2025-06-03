@@ -11,6 +11,7 @@ import html
 
 from utils import config
 from utils.logger import log_to_channel
+from utils.henrik import henrik_get
 
 class HelpView(View):
     def __init__(self, bot):

@@ -7,6 +7,7 @@ from discord.ext import commands
 from discord.ui import View, Modal, TextInput, Button
 from discord import Interaction
 from utils import config
+from utils.henrik import henrik_get
 
 # ─── Modal ────────────────────────────────────────────────────────────
 class EntryModal(Modal):

@@ -4,6 +4,7 @@ import discord
 from discord.ext import commands
 from utils import config
 from utils.logger import log_to_channel
+from utils.henrik import henrik_get
 
 # message_id -> { emoji_str: [role_id, ...], ... }
 reaction_mappings: dict[int, dict[str, list[int]]] = {}
