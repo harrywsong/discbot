@@ -52,11 +52,12 @@ class BettingCog(commands.Cog):
     @app_commands.describe(team1="팀 1 이름", team2="팀 2 이름")
     @app_commands.checks.has_permissions(administrator=True)
     async def create_bet(self, inter: Interaction, team1: str, team2: str):
+        user_display = f"{inter.user.display_name} 님"
         try:
             # 1) Initialize prediction so TeamButton can read it
             self.prediction = {
                 "teams": {"team1": team1, "team2": team2},
-                "bets":  {"team1": {},      "team2": {}},
+                "bets": {"team1": {}, "team2": {}},
             }
 
             # 2) Build the View & Buttons
@@ -73,20 +74,23 @@ class BettingCog(commands.Cog):
 
             # 4) Respond to the slash command
             await inter.response.send_message("✅ 배팅 인터페이스가 생성되었습니다.", ephemeral=True)
-
+            await log_to_channel(self.bot, f"✅ [배팅] {user_display}님 배팅 인터페이스 생성 (ID={msg.id})")
         except Exception as e:
             traceback.print_exception(type(e), e, e.__traceback__)
-            # if we already responded defer/followup, adapt; here we send an error
             if inter.response.is_done():
                 await inter.followup.send(f"❌ 오류 발생: {e}", ephemeral=True)
             else:
                 await inter.response.send_message(f"❌ 오류 발생: {e}", ephemeral=True)
+            await log_to_channel(self.bot, f"❌ [배팅] {user_display}님 인터페이스 생성 중 오류: {e}")
 
     @app_commands.command(name="lock_bet", description="관리자 전용: 베팅 잠금 (추가 베팅 불가)")
     @app_commands.checks.has_permissions(administrator=True)
     async def lock_bet(self, inter: Interaction):
+        user_display = f"{inter.user.display_name} 님"
         if not self.prediction:
-            return await inter.response.send_message("❌ 활성화된 배팅이 없습니다.", ephemeral=True)
+            await inter.response.send_message("❌ 활성화된 배팅이 없습니다.", ephemeral=True)
+            await log_to_channel(self.bot, f"❌ [배팅] {user_display}님 활성 배팅 없음")
+            return
 
         for child in self.prediction["view"].children:
             child.disabled = True
@@ -94,12 +98,16 @@ class BettingCog(commands.Cog):
         msg = await inter.channel.fetch_message(self.prediction["message_id"])
         await msg.edit(view=self.prediction["view"])
         await inter.response.send_message("🔒 베팅이 잠금 처리되었습니다.", ephemeral=True)
+        await log_to_channel(self.bot, f"🔒 [배팅] {user_display}님 베팅 잠금")
 
     @app_commands.command(name="cancel_bet", description="관리자 전용: 배팅 취소 및 환불")
     @app_commands.checks.has_permissions(administrator=True)
     async def cancel_bet(self, inter: Interaction):
+        user_display = f"{inter.user.display_name} 님"
         if not self.prediction:
-            return await inter.response.send_message("❌ 활성화된 배팅이 없습니다.", ephemeral=True)
+            await inter.response.send_message("❌ 활성화된 배팅이 없습니다.", ephemeral=True)
+            await log_to_channel(self.bot, f"❌ [배팅] {user_display}님 활성 배팅 없음")
+            return
 
         refunds = []
         for team in ("team1", "team2"):
@@ -128,21 +136,27 @@ class BettingCog(commands.Cog):
         await msg.edit(embed=embed, view=None)
         self.prediction = None
         await inter.response.send_message("✅ 배팅이 취소되고 환불되었습니다.", ephemeral=True)
+        await log_to_channel(self.bot, f"✅ [배팅] {user_display}님 배팅 취소 및 환불 완료")
 
     @app_commands.command(name="close_bet", description="관리자 전용: 배팅 종료 및 우승팀 정산")
     @app_commands.describe(winner="우승팀 (team1 또는 team2)")
     @app_commands.checks.has_permissions(administrator=True)
     async def close_bet(self, inter: Interaction, winner: Literal["team1", "team2"]):
+        user_display = f"{inter.user.display_name} 님"
         if not self.prediction:
-            return await inter.response.send_message("❌ 활성화된 배팅이 없습니다.", ephemeral=True)
+            await inter.response.send_message("❌ 활성화된 배팅이 없습니다.", ephemeral=True)
+            await log_to_channel(self.bot, f"❌ [배팅] {user_display}님 활성 배팅 없음")
+            return
 
-        loser    = "team2" if winner == "team1" else "team1"
-        win_sum  = sum(self.prediction["bets"][winner].values())
+        loser = "team2" if winner == "team1" else "team1"
+        win_sum = sum(self.prediction["bets"][winner].values())
         lose_sum = sum(self.prediction["bets"][loser].values())
-        total    = win_sum + lose_sum
+        total = win_sum + lose_sum
 
         if win_sum <= 0:
-            return await inter.response.send_message("❌ 우승팀에 베팅이 없습니다.", ephemeral=True)
+            await inter.response.send_message("❌ 우승팀에 베팅이 없습니다.", ephemeral=True)
+            await log_to_channel(self.bot, f"❌ [배팅] {user_display}님 우승팀에 베팅 없음")
+            return
 
         # Twitch-style payout
         payouts = {
@@ -180,13 +194,15 @@ class BettingCog(commands.Cog):
         await msg.edit(embed=embed, view=None)
         self.prediction = None
         await inter.response.send_message("✅ 배팅이 종료되고 정산되었습니다.", ephemeral=True)
+        await log_to_channel(self.bot, f"✅ [배팅] {user_display}님 배팅 종료 및 정산 완료")
 
     def _build_embed(self) -> discord.Embed:
         t1, t2 = self.prediction["teams"]["team1"], self.prediction["teams"]["team2"]
-        b1, b2 = sum(self.prediction["bets"]["team1"].values()), sum(self.prediction["bets"]["team2"].values())
-        total  = b1 + b2
-        pct1   = (b1 / total * 100) if total else 0
-        pct2   = (b2 / total * 100) if total else 0
+        b1 = sum(self.prediction["bets"]["team1"].values())
+        b2 = sum(self.prediction["bets"]["team2"].values())
+        total = b1 + b2
+        pct1 = (b1 / total * 100) if total else 0
+        pct2 = (b2 / total * 100) if total else 0
 
         m1 = round((b2 / b1) + 1, 2) if b1 else 0
         m2 = round((b1 / b2) + 1, 2) if b2 else 0
@@ -214,13 +230,19 @@ class BettingCog(commands.Cog):
 
     async def process_bet(self, team_key: str, user: discord.Member, amount: int, inter: Interaction):
         other = "team2" if team_key == "team1" else "team1"
+        user_display = f"{user.display_name} 님"
+
         if user.id in self.prediction["bets"][other]:
-            return await inter.followup.send("❌ 이미 다른 팀에 베팅하셨습니다.", ephemeral=True)
+            await inter.followup.send("❌ 이미 다른 팀에 베팅하셨습니다.", ephemeral=True)
+            await log_to_channel(self.bot, f"⚠️ [베팅] {user_display}님 이미 다른 팀에 베팅함")
+            return
 
         row = await self.bot.db.fetchrow("SELECT balance FROM coins WHERE user_id = $1", user.id)
         bal = row["balance"] if row else 0
         if amount <= 0 or bal < amount:
-            return await inter.followup.send(f"❌ 잔액 부족 (현재 {bal}코인)", ephemeral=True)
+            await inter.followup.send(f"❌ 잔액 부족 (현재 {bal}코인)", ephemeral=True)
+            await log_to_channel(self.bot, f"❌ [베팅] {user_display}님 잔액 부족 (현재 {bal}코인)")
+            return
 
         await self.bot.db.execute(
             "UPDATE coins SET balance = balance - $2 WHERE user_id = $1",
@@ -228,7 +250,7 @@ class BettingCog(commands.Cog):
         )
         await log_to_channel(
             self.bot,
-            f"🎲 {user.display_name}님이 {self.prediction['teams'][team_key]}에 {amount}코인 베팅"
+            f"🎲 [베팅] {user_display}님이 `{self.prediction['teams'][team_key]}`에 {amount}코인 베팅"
         )
         await self.bot.get_cog("Coins").refresh_leaderboard()
 
@@ -240,7 +262,7 @@ class BettingCog(commands.Cog):
         await msg.edit(embed=self._build_embed())
 
         await inter.followup.send(f"✅ {amount}코인 베팅 완료!", ephemeral=True)
-
+        await log_to_channel(self.bot, f"✅ [베팅] {user_display}님 {amount}코인 베팅 완료")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(BettingCog(bot))

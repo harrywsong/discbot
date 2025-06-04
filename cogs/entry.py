@@ -1,13 +1,16 @@
 # cogs/entry.py
 
 import re
-import discord
 import traceback
+import discord
 from discord.ext import commands
 from discord.ui import View, Modal, TextInput, Button
 from discord import Interaction
+
 from utils import config
 from utils.henrik import henrik_get
+from utils.logger import log_to_channel
+
 
 # ─── Modal ────────────────────────────────────────────────────────────
 class EntryModal(Modal):
@@ -29,7 +32,7 @@ class EntryModal(Modal):
         # 1) defer so we can follow up
         try:
             await inter.response.defer(ephemeral=True)
-        except:
+        except Exception as e:
             traceback.print_exc()
             return
 
@@ -42,7 +45,10 @@ class EntryModal(Modal):
         m     = re.search(r"\d{17,19}", raw)
         if m:
             inv_id = int(m.group())
-            member = inter.guild.get_member(inv_id) or await inter.guild.fetch_member(inv_id)
+            try:
+                member = inter.guild.get_member(inv_id) or await inter.guild.fetch_member(inv_id)
+            except:
+                member = None
             inviter_mention = member.mention if member else f"<@{inv_id}>"
         else:
             inviter_mention = raw or "—"
@@ -66,9 +72,18 @@ class EntryModal(Modal):
             log_ch = inter.guild.get_channel(config.ENTRY_LOG_CHANNEL_ID)
             if log_ch:
                 await log_ch.send(embed=embed)
+                # ▶ Log: 양식 제출
+                await log_to_channel(
+                    inter.client,
+                    f"📝 [입장] {inter.user.display_name}님이 입장 양식을 제출했습니다. RiotID: {riot}"
+                )
             else:
-                print(f"[EntryModal] log channel not found: {config.ENTRY_LOG_CHANNEL_ID}")
-        except:
+                # 만약 채널을 찾을 수 없으면, 운영진 로그에 남김
+                await log_to_channel(
+                    inter.client,
+                    f"⚠️ [입장] 로그 채널을 찾을 수 없음: {config.ENTRY_LOG_CHANNEL_ID}"
+                )
+        except Exception:
             traceback.print_exc()
             return await inter.followup.send("⚠️ 오류가 발생했습니다.", ephemeral=True)
 
@@ -77,12 +92,18 @@ class EntryModal(Modal):
             unv = inter.guild.get_role(config.UNVERIFIED_ROLE_ID)
             if unv:
                 await inter.user.remove_roles(unv, reason="Completed entry form")
-        except:
+                # ▶ Log: 역할 제거
+                await log_to_channel(
+                    inter.client,
+                    f"✅ [입장] {inter.user.display_name}님에게서 Unverified 역할 제거됨"
+                )
+        except Exception:
             traceback.print_exc()
 
         # 6) confirmation
         await inter.followup.send(
-            "✅ 입장 양식 제출 완료! https://discord.com/channels/1059211805567746090/1207972911420538900 채널 접근 권한을 활성화했습니다.",
+            "✅ 입장 양식 제출 완료! "
+            "https://discord.com/channels/1059211805567746090/1207972911420538900 채널 접근 권한을 활성화했습니다.",
             ephemeral=True
         )
 
@@ -100,7 +121,7 @@ class EntryButton(Button):
         await inter.response.send_modal(EntryModal())
 
 
-# ─── Cog to mirror the shop-pattern ────────────────────────────────────
+# ─── Cog to persistently show the Entry button ──────────────────────────
 class EntryPersistent(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -113,14 +134,19 @@ class EntryPersistent(commands.Cog):
     async def on_ready(self):
         chan = self.bot.get_channel(config.ENTRY_BUTTON_CHANNEL_ID)
         if not chan:
-            print(f"[EntryPersistent] invalid channel ID: {config.ENTRY_BUTTON_CHANNEL_ID}")
+            # ▶ Log: 잘못된 채널 ID
+            await log_to_channel(
+                self.bot,
+                f"⚠️ [입장] invalid channel ID: {config.ENTRY_BUTTON_CHANNEL_ID}"
+            )
             return
 
         # 2) clear out old buttons
         try:
             await chan.purge(limit=None)
-        except:
+        except Exception:
             traceback.print_exc()
+            await log_to_channel(self.bot, "⚠️ [입장] on_ready: 기존 메시지 삭제 오류")
 
         # 3) send the embed + fresh view
         embed = discord.Embed(
@@ -132,8 +158,9 @@ class EntryPersistent(commands.Cog):
         view.add_item(EntryButton())
         try:
             await chan.send(embed=embed, view=view)
-        except:
+        except Exception:
             traceback.print_exc()
+            await log_to_channel(self.bot, "⚠️ [입장] on_ready: 버튼 메시지 전송 오류")
 
 
 async def setup(bot: commands.Bot):

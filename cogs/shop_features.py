@@ -1,5 +1,3 @@
-#shop_features.py new
-
 import discord
 import asyncio
 import traceback
@@ -77,7 +75,7 @@ class NickColorSelect(Select):
         role_id = config.REACTION_TO_COLOR_ROLES[choice][0]
         role    = guild.get_role(role_id)
         if not role:
-            return await inter.followup.send("❌ 색상 역할을 찾을 수 없습니다.")
+            return await inter.followup.send("❌ 색상 역할을 찾을 수 없습니다.", ephemeral=True)
 
         # make sure it’s not hoisted, but don’t touch its position
         await role.edit(hoist=False)
@@ -89,7 +87,7 @@ class NickColorSelect(Select):
         # confirm
         await inter.followup.send(
             f"✅ {choice} 역할이 부여되었습니다. 만료까지 {expiry(12*3600)}초 남음.",
-                ephemeral=True
+            ephemeral=True
         )
 
         await inter.followup.send(
@@ -104,7 +102,10 @@ class NickColorSelect(Select):
     async def _remove_later(self, bot, user, role, delay):
         await asyncio.sleep(delay)
         await user.remove_roles(role, reason="Color expired")
-        await log_to_channel(bot, f"{user.display_name}님의 {role.name} 역할이 만료되어 제거되었습니다.")
+        await log_to_channel(
+            bot,
+            f"🗑️ {user.display_name}님의 {role.name} 역할이 만료되어 제거되었습니다."
+        )
 
 
 class CustomRoleModal(Modal):
@@ -158,13 +159,20 @@ class CustomRoleModal(Modal):
                 f"❌ 역할 생성 중 오류가 발생했습니다:\n```py\n{tb}```",
                 ephemeral=True
             )
-            await log_to_channel(inter.client, f"[CustomRoleModal] Error:\n```{tb}```")
+            await log_to_channel(
+                inter.client,
+                f"⚠️ 커스텀 역할 생성 중 오류:\n```{tb}```"
+            )
             raise
 
     async def _remove_later(self, bot, guild, role, delay):
         await asyncio.sleep(delay)
         await role.delete(reason="Custom role expired")
-        await log_to_channel(bot, f"역할 `{role.name}`이 만료되어 삭제되었습니다.")
+        await log_to_channel(
+            bot,
+            f"🗑️ 역할 `{role.name}`이 만료되어 삭제되었습니다."
+        )
+
 
 class CustomRoleButton(Button):
     COST = 2000
@@ -205,6 +213,7 @@ class CustomRoleButton(Button):
 
         # 4) 모달 띄우기
         await inter.response.send_modal(CustomRoleModal())
+
 
 class XPBoosterButton(Button):
     COST = 5000
@@ -272,8 +281,9 @@ class XPBoosterButton(Button):
         await user.remove_roles(booster_role, store_role, reason="XP Booster expired")
         await log_to_channel(
             bot,
-            f"{user.display_name}님의 XP Booster 역할과 스토어 접근 역할이 만료되어 제거되었습니다."
+            f"🗑️ {user.display_name}님의 XP Booster 역할과 스토어 접근 역할이 만료되어 제거되었습니다."
         )
+
 
 class ShopPersistent(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -294,8 +304,7 @@ class ShopPersistent(commands.Cog):
         embed = discord.Embed(
             title="🏪 코인 상점",
             description="아래에서 아이템을 클릭/선택하여 구매하세요!\n\n"
-                        "*⚠️**닉네임 색상 변경**과 **커스텀 역할 생성**은\n"
-                        "동시에 사용할 수 없으니 유의해주시기 바랍니다.⚠️*",
+                        "*⚠️ 닉네임 색상 변경과 커스텀 역할 생성은 동시에 사용할 수 없으니 유의해주시기 바랍니다.⚠️*",
             color=discord.Color.gold()
         )
         embed.add_field(name="닉네임 색상 변경", value="1000 코인 (12h)", inline=False)

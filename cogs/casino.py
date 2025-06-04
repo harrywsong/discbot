@@ -18,15 +18,16 @@ from utils.henrik import henrik_get
 
 # 실제 유럽식 룰렛의 빨강 번호 집합
 RED_NUMBERS = {
-    1,3,5,7,9,12,14,16,18,
-    19,21,23,25,27,30,32,34,36
+    1, 3, 5, 7, 9, 12, 14, 16, 18,
+    19, 21, 23, 25, 27, 30, 32, 34, 36
 }
+
 
 class RPSView(View):
     def __init__(self, user: discord.Member, bot: commands.Bot):
         super().__init__(timeout=60)
         self.user = user
-        self.bot  = bot
+        self.bot = bot
 
     async def disable_all(self):
         for child in self.children:
@@ -51,7 +52,7 @@ class RPSView(View):
             )
 
         bot_choice = random.choice(["rock", "paper", "scissors"])
-        wins = {"rock":"scissors", "scissors":"paper", "paper":"rock"}
+        wins = {"rock": "scissors", "scissors": "paper", "paper": "rock"}
 
         if user_choice == bot_choice:
             text, delta = "⚖️ 무승부! 코인은 변동 없습니다.", 0
@@ -62,16 +63,18 @@ class RPSView(View):
 
         if delta:
             await self.bot.db.execute(
-                "UPDATE coins SET balance = GREATEST(balance + $2,0) WHERE user_id = $1",
+                "UPDATE coins SET balance = GREATEST(balance + $2, 0) WHERE user_id = $1",
                 self.user.id, delta
             )
             await self.bot.get_cog("Coins").refresh_leaderboard()
+
+            user_display = f"{self.user.display_name} 님"
             await log_to_channel(
                 self.bot,
-                f"{self.user.display_name}님이 가위바위보 승리로 {delta}코인 획득!"
+                f"🎮 [가위바위보] {user_display}님이 승리하여 {delta}코인 획득"
             )
 
-        emoji = {"rock":"✊", "paper":"🖐️", "scissors":"✌️"}
+        emoji = {"rock": "✊", "paper": "🖐️", "scissors": "✌️"}
         result_msg = (
             f"**숯검댕이** 🆚 **{self.user.display_name}**\n\n"
             f"숯검댕이: {emoji[bot_choice]}  {self.user.display_name}: {emoji[user_choice]}\n\n"
@@ -82,19 +85,20 @@ class RPSView(View):
         await interaction.response.edit_message(content=result_msg, view=self)
         self.stop()
 
+
 def draw_roulette_wheel(size: int = 400) -> Image.Image:
     """
     Returns a square RGBA PIL image, size x size px,
     with 37 equal‑angle pie slices representing a Euro wheel.
     Pocket 0 is centered at the very top.
     """
-    img = Image.new("RGBA", (size, size), (255,255,255,0))
+    img = Image.new("RGBA", (size, size), (255, 255, 255, 0))
     draw = ImageDraw.Draw(img)
-    cx, cy = size/2, size/2
-    r = size/2 - 20        # leave a 20px margin
+    cx, cy = size / 2, size / 2
+    r = size / 2 - 20  # leave a 20px margin
     deg_per = 360 / 37
     # start so that pocket 0 is centered at 12 o'clock
-    start_angle = -90 - deg_per/2
+    start_angle = -90 - deg_per / 2
 
     pockets = [0] + list(range(1, 37))
     for i, pocket in enumerate(pockets):
@@ -106,7 +110,7 @@ def draw_roulette_wheel(size: int = 400) -> Image.Image:
             else "black"
         )
         draw.pieslice(
-            [cx-r, cy-r, cx+r, cy+r],
+            [cx - r, cy - r, cx + r, cy + r],
             start=a0, end=a1,
             fill=color,
             outline="white"
@@ -117,49 +121,50 @@ def draw_roulette_wheel(size: int = 400) -> Image.Image:
 
 
 def make_spin_gif(
-     wheel_img: Image.Image,
-     result_pocket: int,
-     frames: int = 25
- ) -> io.BytesIO:
-     """
-     Rotate wheel_img so that result_pocket lands at 12 o'clock,
-     easing out over `frames` frames. Returns a BytesIO of a GIF.
-     """
-     size = wheel_img.width
-     deg_per = 360 / 37
-     spins = 3
-     final_rotation = - (360*spins + result_pocket * deg_per)
+    wheel_img: Image.Image,
+    result_pocket: int,
+    frames: int = 25
+) -> io.BytesIO:
+    """
+    Rotate wheel_img so that result_pocket lands at 12 o'clock,
+    easing out over `frames` frames. Returns a BytesIO of a GIF.
+    """
+    size = wheel_img.width
+    deg_per = 360 / 37
+    spins = 3
+    final_rotation = - (360 * spins + result_pocket * deg_per)
 
-     gif_frames = []
-     for i in range(frames):
-         t = i / (frames - 1)
-         # ease‑out curve
-         angle = final_rotation * (1 - (1 - t)**2)
-         frame = wheel_img.rotate(angle, resample=Image.BICUBIC, expand=False)
+    gif_frames = []
+    for i in range(frames):
+        t = i / (frames - 1)
+        # ease‑out curve
+        angle = final_rotation * (1 - (1 - t) ** 2)
+        frame = wheel_img.rotate(angle, resample=Image.BICUBIC, expand=False)
 
-         # draw the fixed pointer triangle at 12 o'clock
-         draw = ImageDraw.Draw(frame)
-         triangle = [
-             (size/2 - 12, 6),
-             (size/2 + 12, 6),
-             (size/2    , 30)
-         ]
-         draw.polygon(triangle, fill="yellow")
+        # draw the fixed pointer triangle at 12 o'clock
+        draw = ImageDraw.Draw(frame)
+        triangle = [
+            (size / 2 - 12, 6),
+            (size / 2 + 12, 6),
+            (size / 2, 30)
+        ]
+        draw.polygon(triangle, fill="yellow")
 
-         gif_frames.append(frame)
+        gif_frames.append(frame)
 
-     out = io.BytesIO()
-     gif_frames[0].save(
-         out,
-         format="GIF",
-         save_all=True,
-         append_images=gif_frames[1:],
-         duration=40,   # ms per frame
-         loop=1,        # play exactly once
-         disposal=2     # clear each frame before drawing next
-     )
-     out.seek(0)
-     return out
+    out = io.BytesIO()
+    gif_frames[0].save(
+        out,
+        format="GIF",
+        save_all=True,
+        append_images=gif_frames[1:],
+        duration=40,  # ms per frame
+        loop=1,       # play exactly once
+        disposal=2    # clear each frame before drawing next
+    )
+    out.seek(0)
+    return out
+
 
 def channel_only(channel_id: int):
     def decorator(func):
@@ -174,12 +179,13 @@ def channel_only(channel_id: int):
         return wrapper
     return decorator
 
+
 class DuelView(discord.ui.View):
     def __init__(self, challenger: discord.Member, opponent: discord.Member, bet: int):
         super().__init__(timeout=60)
         self.challenger = challenger
-        self.opponent    = opponent
-        self.bet         = bet
+        self.opponent = opponent
+        self.bet = bet
 
     @discord.ui.button(label="수락", style=discord.ButtonStyle.success)
     async def accept(self, interaction: Interaction, button: discord.ui.Button):
@@ -208,7 +214,7 @@ class DuelView(discord.ui.View):
             self.opponent.id, self.bet
         )
 
-        d1, d2 = random.randint(1,6), random.randint(1,6)
+        d1, d2 = random.randint(1, 6), random.randint(1, 6)
         if d1 > d2:
             winner, net = self.challenger, 2 * self.bet
         elif d2 > d1:
@@ -273,15 +279,17 @@ class Casino(commands.Cog):
 
         # ▶ Log here: 슬롯 도전 기록
         try:
-            await log_to_channel(self.bot,
-                f"{interaction.user.name}님 슬롯 베팅 {bet}코인 시도"
+            user_display = f"{interaction.user.display_name} 님"
+            await log_to_channel(
+                self.bot,
+                f"🎰 [슬롯] {user_display}님 베팅 {bet}코인 시도"
             )
         except Exception:
             pass
 
         # 2) 심볼별 가중치 설정 (총합 100)
         symbols = ["🍒", "🍋", "🍀", "💎", "7️⃣"]
-        weights = [50,   25,   15,   8,    2]
+        weights = [50, 25, 15, 8, 2]
         roll = random.choices(symbols, weights, k=3)
 
         # 3) 페이아웃 배수 정의 (총 반환 배수)
@@ -330,8 +338,11 @@ class Casino(commands.Cog):
 
         # ▶ Log here: 슬롯 결과 기록
         try:
-            await log_to_channel(self.bot,
-                f"{interaction.user.name}님 슬롯 결과 → {' '.join(roll)}, {outcome}, +{net}코인"
+            user_display = f"{interaction.user.display_name} 님"
+            sign = f"{net:+}" if net != 0 else "0"
+            await log_to_channel(
+                self.bot,
+                f"🎰 [슬롯] {user_display}님 결과: {' '.join(roll)}, {outcome}, {sign}코인"
             )
         except Exception:
             pass
@@ -343,8 +354,13 @@ class Casino(commands.Cog):
     @app_commands.describe(bet="베팅할 코인 수")
     @channel_only(config.BLACKJACK_CHANNEL_ID)
     async def blackjack(self, interaction: Interaction, bet: int):
+        user_display = f"{interaction.user.display_name} 님"
+
         # ── 1) 잔액 체크 & 기록
-        await log_to_channel(self.bot, f"{interaction.user.name}님 블랙잭 베팅 {bet}코인 시도")
+        await log_to_channel(
+            self.bot,
+            f"♠️ [블랙잭] {user_display}님 베팅 {bet}코인 시도"
+        )
         row = await self.bot.db.fetchrow(
             "SELECT balance FROM coins WHERE user_id = $1",
             interaction.user.id
@@ -383,9 +399,10 @@ class Casino(commands.Cog):
                 m = re.match(r'^(10|\d|[JQKA])', c)
                 r = m.group(1)
                 total += vals[r] if r in vals else int(r)
-                if r == "A": aces += 1
+                if r == "A":
+                    aces += 1
             while total > 21 and aces:
-                total -= 10;
+                total -= 10
                 aces -= 1
             return total
 
@@ -394,7 +411,7 @@ class Casino(commands.Cog):
         dealer_val = hand_value(dealer)
         await log_to_channel(
             self.bot,
-            f"{interaction.user.name}님 블랙잭 시작: 플레이어 {values[0]}, 딜러 {dealer_val}"
+            f"♠️ [블랙잭] {user_display}님 시작: 플레이어 {values[0]}, 딜러 {dealer_val}"
         )
 
         # ── 6) 임베드 & 뷰 준비
@@ -505,16 +522,18 @@ class Casino(commands.Cog):
                 summary.append(f"핸드 {idx}: {res} ({payout - stake:+} 코인)")
                 if payout > 0:
                     await self.bot.db.execute(
-                        "UPDATE coins SET balance = balance + $2 WHERE user_id = $1",
+                        "UPDATE coins SET balance = GREATEST(balance + $2, 0) WHERE user_id = $1",
                         player.id, payout
                     )
 
             embed.title = "\n".join(summary)
             await i.response.edit_message(embed=embed, view=view)
             await self.bot.get_cog("Coins").refresh_leaderboard()
+
+            user_display = f"{player.display_name} 님"
             await log_to_channel(
                 self.bot,
-                f"{player.display_name}님 블랙잭 결과: {'; '.join(summary)}"
+                f"♠️ [블랙잭] {user_display}님 결과: {'; '.join(summary)}"
             )
 
         # ──11) 더블다운 콜백
@@ -561,9 +580,11 @@ class Casino(commands.Cog):
                 for btn in view.children:
                     btn.disabled = True
                 await i.response.edit_message(embed=embed, view=view)
+
+                user_display = f"{player.display_name} 님"
                 await log_to_channel(
                     self.bot,
-                    f"{player.display_name}님 더블다운 버스트 → -{loss_amount}코인"
+                    f"♠️ [블랙잭] {user_display}님 더블다운 버스트 → -{loss_amount}코인"
                 )
                 return
 
@@ -635,10 +656,12 @@ class Casino(commands.Cog):
                 ephemeral=True
             )
 
-        # ▶ Log here: 동전뒤집기 도전 기록
+        # ▶ Log here: 동전 뒤집기 도전 기록
         try:
-            await log_to_channel(self.bot,
-                f"{interaction.user.name}님이 동전 뒤집기 베팅 {bet}코인, 선택={side.value}"
+            user_display = f"{interaction.user.display_name} 님"
+            await log_to_channel(
+                self.bot,
+                f"🔀 [동전뒤집기] {user_display}님 베팅 {bet}코인, 선택={side.value}"
             )
         except Exception:
             pass
@@ -664,10 +687,13 @@ class Casino(commands.Cog):
             interaction.user.id, net
         )
 
-        # ▶ Log here: 동전뒤집기 결과 기록
+        # ▶ Log here: 동전 뒤집기 결과 기록
         try:
-            await log_to_channel(self.bot,
-                f"{interaction.user.name}님 동전 뒤집기 → {flip}, +{net}코인"
+            user_display = f"{interaction.user.display_name} 님"
+            sign = f"{net:+}" if net != 0 else "0"
+            await log_to_channel(
+                self.bot,
+                f"🔀 [동전뒤집기] {user_display}님 결과: {flip}, {sign}코인"
             )
         except Exception:
             pass
@@ -694,9 +720,12 @@ class Casino(commands.Cog):
 
         # ▶ Log here: 주사위 대결 도전 기록
         try:
-            await log_to_channel(self.bot,
-                                 f"{interaction.user.name}님이 {opponent.name}님에게 주사위 대결을 베팅 {bet}코인으로 도전"
-                                 )
+            user_display = f"{interaction.user.display_name} 님"
+            opp_display = f"{opponent.display_name} 님"
+            await log_to_channel(
+                self.bot,
+                f"🎲 [주사위대결] {user_display}님이 {opp_display}님에게 {bet}코인으로 도전"
+            )
         except Exception:
             pass
 
@@ -737,10 +766,10 @@ class Casino(commands.Cog):
     )
     @channel_only(config.ROULETTE_CHANNEL_ID)
     async def roulette(
-            self,
-            interaction: Interaction,
-            bet: int,
-            guess: str
+        self,
+        interaction: Interaction,
+        bet: int,
+        guess: str
     ):
         # 1) 잔액 확인
         row = await self.bot.db.fetchrow(
@@ -792,16 +821,19 @@ class Casino(commands.Cog):
                 net = -bet
                 text = f"🎡 룰렛 결과: **{spin}** ({spin_color})\n❌ 색상 맞추기 실패... -**{bet}** 코인"
 
-        # 5) DB 업데이트 및 리더보드
+        # 5) DB 업데이트 및 리더보드 갱신
         await self.bot.db.execute(
             "UPDATE coins SET balance = GREATEST(balance + $2, 0) WHERE user_id = $1",
             interaction.user.id, net
         )
         await self.bot.get_cog("Coins").refresh_leaderboard()
+
+        # ▶ Log here: 룰렛 결과 기록
+        user_display = f"{interaction.user.display_name} 님"
+        sign = f"{net:+}" if net != 0 else "0"
         await log_to_channel(
             self.bot,
-            f"{interaction.user.display_name}님 룰렛 베팅 {bet}코인, 선택={guess} → "
-            f"{spin}({spin_color}), {net:+}코인"
+            f"🎡 [룰렛] {user_display}님 베팅 {bet}코인, 선택={guess} → {spin}({spin_color}), {sign}코인"
         )
 
         # 6) Generate + send spin GIF as your initial interaction response
@@ -815,6 +847,7 @@ class Casino(commands.Cog):
         # 7) Follow up with the text result
         await asyncio.sleep(2)
         await interaction.followup.send(text)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Casino(bot))

@@ -1,5 +1,3 @@
-# cogs/voice.py new
-
 import discord
 from discord import PermissionOverwrite
 from discord.ext import commands, tasks
@@ -14,11 +12,13 @@ created_channels: dict[int, datetime] = {}
 
 voice_channel_2_name = "📸️️ discord.gg/ourstudio"
 
+
 def get_channels(guild: discord.Guild):
     vc1 = find(lambda c: c.name.startswith("🟢"), guild.voice_channels)
     vc2 = find(lambda c: c.name.startswith("📸"), guild.voice_channels)
     vc3 = find(lambda c: c.name.startswith("👥"), guild.voice_channels)
     return vc1, vc2, vc3
+
 
 class VoiceManager(commands.Cog):
     def __init__(self, bot):
@@ -35,20 +35,26 @@ class VoiceManager(commands.Cog):
                 continue
 
             online_count = sum(1 for m in guild.members if m.status == discord.Status.online)
-            idle_count   = sum(1 for m in guild.members if m.status == discord.Status.idle)
-            dnd_count    = sum(1 for m in guild.members if m.status == discord.Status.dnd)
-            total_count  = len(guild.members)
+            idle_count = sum(1 for m in guild.members if m.status == discord.Status.idle)
+            dnd_count = sum(1 for m in guild.members if m.status == discord.Status.dnd)
+            total_count = len(guild.members)
 
             name1 = f"🟢 {online_count}    🌙 {idle_count}    ⛔ {dnd_count}"
             name2 = voice_channel_2_name
             name3 = f"👥 Users: {total_count}"
 
             if vc1.name != name1:
+                old = vc1.name
                 await vc1.edit(name=name1)
+                await log_to_channel(self.bot, f"🔄 `{old}` → `{name1}`으로 변경됨")
             if vc2.name != name2:
+                old = vc2.name
                 await vc2.edit(name=name2)
+                await log_to_channel(self.bot, f"🔄 `{old}` → `{name2}`으로 변경됨")
             if vc3.name != name3:
+                old = vc3.name
                 await vc3.edit(name=name3)
+                await log_to_channel(self.bot, f"🔄 `{old}` → `{name3}`으로 변경됨")
 
     @tasks.loop(minutes=60)
     async def periodic_cleanup(self):
@@ -125,6 +131,7 @@ class VoiceManager(commands.Cog):
             await member.move_to(new_channel)
             created_channels[new_channel.id] = now
             await log_to_channel(self.bot, f"🎧 `{new_channel.name}` 생성됨 (by {member.display_name})")
+
 
 async def setup(bot):
     await bot.add_cog(VoiceManager(bot))

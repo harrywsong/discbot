@@ -20,9 +20,15 @@ class HelpView(View):
 
     @discord.ui.button(label="문의하기", style=discord.ButtonStyle.primary, custom_id="open_ticket")
     async def open_ticket(self, interaction: discord.Interaction, button: Button):
-        guild  = interaction.guild
+        guild = interaction.guild
         member = interaction.user
-        cat    = guild.get_channel(config.TICKET_CATEGORY_ID)
+        cat = guild.get_channel(config.TICKET_CATEGORY_ID)
+
+        # ✅ SAFETY CHECK
+        if cat is None:
+            await interaction.response.send_message("❌ 티켓 카테고리를 찾을 수 없습니다.", ephemeral=True)
+            await log_to_channel(self.bot, f"❌ [ticket] 카테고리 ID `{config.TICKET_CATEGORY_ID}`를 찾을 수 없습니다.")
+            return
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -48,12 +54,14 @@ class HelpView(View):
             color=discord.Color.green(),
             timestamp=datetime.now(timezone.utc)
         )
-        embed.add_field(name="생성자", value=f"{member} | {member.id}", inline=False)
+        embed.add_field(name="생성자", value=f"{member} | `{member.id}`", inline=False)
         embed.add_field(name="티켓 채널", value=ticket_chan.mention, inline=False)
         await ticket_chan.send(embed=embed, view=CloseTicketView(self.bot))
 
-        await log_to_channel(self.bot, f"{member}님이 `{ticket_chan.name}` 티켓을 생성했습니다.")
-
+        await log_to_channel(
+            self.bot,
+            f"🎫 {member.display_name}님이 `{ticket_chan.name}` 티켓을 생성했습니다."
+        )
 
 class CloseTicketView(View):
     def __init__(self, bot):
@@ -228,13 +236,17 @@ img.attachment {
             color=discord.Color.red(),
             timestamp=datetime.now(timezone.utc)
         )
-        close_embed.add_field(name="티켓",         value=channel.name, inline=False)
-        close_embed.add_field(name="생성자",       value=str(ticket_owner), inline=False)
-        close_embed.add_field(name="닫은 사람",    value=str(interaction.user), inline=False)
+        close_embed.add_field(name="티켓",      value=channel.name, inline=False)
+        close_embed.add_field(name="생성자",    value=str(ticket_owner), inline=False)
+        close_embed.add_field(name="닫은 사람", value=str(interaction.user), inline=False)
 
         history_ch = channel.guild.get_channel(config.HISTORY_CHANNEL_ID)
         if history_ch:
             await history_ch.send(embed=close_embed, file=File(buf, filename=f"{channel.name}.html"))
+            await log_to_channel(
+                self.bot,
+                f"✅ {ticket_owner.display_name}님의 `{channel.name}` 티켓이 닫히고 기록이 저장되었습니다."
+            )
         else:
             await log_to_channel(self.bot, "⚠️ HISTORY 채널을 찾을 수 없습니다.")
 

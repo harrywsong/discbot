@@ -11,6 +11,7 @@ from utils import config
 from utils.logger import log_to_channel
 from utils.henrik import henrik_get
 
+
 class DailyCoinsView(discord.ui.View):
     def __init__(self, bot: commands.Bot):
         super().__init__(timeout=None)
@@ -19,10 +20,10 @@ class DailyCoinsView(discord.ui.View):
     @discord.ui.button(label="오늘의 코인 받기", style=discord.ButtonStyle.primary, custom_id="dailycoins_button")
     async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        user    = interaction.user
+        user = interaction.user
         now_utc = datetime.now(timezone.utc)
 
-        eastern  = ZoneInfo("America/New_York")
+        eastern = ZoneInfo("America/New_York")
         today_et = now_utc.astimezone(eastern).date()
 
         # check last claim
@@ -39,7 +40,7 @@ class DailyCoinsView(discord.ui.View):
             ) + timedelta(days=1)
             delta = next_midnight - now_utc.astimezone(eastern)
             hrs, rem = divmod(delta.seconds, 3600)
-            mins      = rem // 60
+            mins = rem // 60
             return await interaction.followup.send(
                 f"⏳ 이미 오늘의 보상을 받으셨습니다. 다음 보상은 `{hrs}시간 {mins}분` 후 자정(12 AM 동부 시간)에 리셋됩니다.",
                 ephemeral=True
@@ -69,7 +70,11 @@ class DailyCoinsView(discord.ui.View):
         await interaction.followup.send(
             f"✅ 오늘의 **{amount}** 코인을 받으셨습니다!", ephemeral=True
         )
-        await log_to_channel(self.bot, f"{user.display_name}님이 {amount} 코인을 받았습니다.")
+        user_display = f"{user.display_name}님"
+        await log_to_channel(
+            self.bot,
+            f"🎁 [오늘의 코인] {user_display}이(가) {amount}코인 수령"
+        )
 
         # refresh the leaderboard in place
         coins_cog = self.bot.get_cog("Coins")
@@ -185,8 +190,7 @@ class Coins(commands.Cog):
         )
         bal = row["balance"] if row else 0
         await interaction.response.send_message(
-            f"{interaction.user.mention}, 현재 **{bal}** 코인을 보유 중입니다.",
-            ephemeral=True
+            f"{interaction.user.mention}님, 현재 **{bal}** 코인을 보유 중입니다."
         )
 
     @app_commands.command(
@@ -207,7 +211,7 @@ class Coins(commands.Cog):
         amount="적용할 코인 양"
     )
     @app_commands.choices(action=[
-        app_commands.Choice(name="추가",  value="add"),
+        app_commands.Choice(name="추가", value="add"),
         app_commands.Choice(name="제거", value="remove"),
         app_commands.Choice(name="설정", value="set"),
     ])
@@ -242,13 +246,13 @@ class Coins(commands.Cog):
 
             if action.value == "add":
                 new_bal = old_bal + amount
-                delta   = amount
+                delta = amount
             elif action.value == "remove":
                 new_bal = max(0, old_bal - amount)
-                delta   = new_bal - old_bal
+                delta = new_bal - old_bal
             else:  # set
                 new_bal = max(0, amount)
-                delta   = new_bal - old_bal
+                delta = new_bal - old_bal
 
             await self.bot.db.execute(
                 """
@@ -262,10 +266,13 @@ class Coins(commands.Cog):
 
             sign = "+" if delta > 0 else ""
             summary.append(f"{m.mention}: {sign}{delta} 코인 ({old_bal} → {new_bal})")
+            actor_display = f"{interaction.user.display_name}님"
+            target_display = f"{m.display_name}님"
+            action_ko = "추가" if action.value == "add" else ("제거" if action.value == "remove" else "설정")
             await log_to_channel(
                 self.bot,
-                f"🛠️ {interaction.user.display_name}님이 {m.display_name}님의 코인을 "
-                f"{old_bal} → {new_bal}로 {action.name}했습니다."
+                f"🛠️ [코인 수정] {actor_display}이(가) {target_display}님의 코인을 "
+                f"{old_bal} → {new_bal}으로 {action_ko}했습니다."
             )
 
         # refresh the in‑channel leaderboard
@@ -288,10 +295,10 @@ class Coins(commands.Cog):
         amount="전송할 코인 수"
     )
     async def coins_tip(
-            self,
-            interaction: discord.Interaction,
-            member: discord.Member,
-            amount: int
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        amount: int
     ):
         sender = interaction.user
         recipient = member
@@ -360,11 +367,14 @@ class Coins(commands.Cog):
             pass
 
         # 3) 로깅
+        sender_display = f"{sender.display_name}님"
+        recipient_display = f"{recipient.display_name}님"
         await log_to_channel(
             self.bot,
-            f"💸 {sender.display_name} → {recipient.display_name}: "
+            f"💸 [코인거래] {sender_display} → {recipient_display}: "
             f"{amount}코인 전송 (수수료 {fee}코인), 실수령 {net}코인"
         )
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Coins(bot))

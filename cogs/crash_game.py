@@ -29,10 +29,7 @@ font_name = font_manager.FontProperties(fname=font_path).get_name()
 plt.rcParams['font.family'] = font_name
 plt.rcParams['axes.unicode_minus'] = False
 
-
 # ─── 한글 폰트 설정 ────────────────────────────────────
-# 이 파일이 cogs/ 폴더 안에 있다고 가정하고,
-# 프로젝트 루트/assets/fonts/NotoSansKR-Bold.ttf 를 가리키도록 경로 계산
 font_prop = font_manager.FontProperties(fname=font_path)
 matplotlib.rc('font', family=font_prop.get_name())
 matplotlib.rcParams['axes.unicode_minus'] = False  # 마이너스 기호 깨짐 방지
@@ -40,10 +37,11 @@ matplotlib.rcParams['axes.unicode_minus'] = False  # 마이너스 기호 깨짐 
 # 하우스 어드밴티지 (예: 5%)
 HOUSE_EDGE = 0.05
 MAX_MULTIPLIER = 20.0
-MIN_MULT     = 1.02
-DESIRED_M    = 20.0
-DESIRED_P    = 0.01
-POWER = math.log(DESIRED_P) / math.log(MIN_MULT/DESIRED_M)
+MIN_MULT = 1.02
+DESIRED_M = 20.0
+DESIRED_P = 0.01
+POWER = math.log(DESIRED_P) / math.log(MIN_MULT / DESIRED_M)
+
 
 class CrashView(View):
     def __init__(self, round_obj):
@@ -67,9 +65,11 @@ class CrashView(View):
         )
         await self.round.update_embed()
         # ▶ Log here: who cashed out and at what multiplier
-        await log_to_channel(self.round.bot,
-                             f"✅ {interaction.user.name}님이 {self.round.current_mult:.2f}×에 캐쉬아웃"
-                             )
+        user_display = f"{interaction.user.display_name}님"
+        await log_to_channel(
+            self.round.bot,
+            f"💸 [크래시 캐쉬아웃] {user_display}이(가) {self.round.current_mult:.2f}×에 캐쉬아웃"
+        )
 
 
 class CrashRound:
@@ -119,8 +119,7 @@ class CrashRound:
             # fallback to logging if the user isn't found
             await log_to_channel(
                 self.bot,
-                f"[WARN] Could not DM user {config.CRASH_NOTIFY_USER_ID}. "
-                f"크래시 목표 포인트: {self.crash_point:.2f}×"
+                f"⚠️ [크래시 알림 실패] 사용자 {config.CRASH_NOTIFY_USER_ID}를 찾을 수 없음. 크래시 목표 포인트: {self.crash_point:.2f}×"
             )
 
         channel = self.bot.get_channel(config.CRASH_CHANNEL_ID)
@@ -223,11 +222,11 @@ class CrashRound:
                 if cashed and cashed <= cp:
                     payout = int(bet * cashed)
                     net = payout - bet
-                    line = f"\n{m.mention}: ✅ 캐쉬아웃! \n+**{net}** 코인 획득"
+                    line = f"\n{m.mention}: ✅ 캐쉬아웃!  +**{net}** 코인 획득"
                     result = "성공"
                 else:
                     net = -bet
-                    line = f"\n{m.mention}: ❌ 크래시.. \n-**{bet}** 코인 손실"
+                    line = f"\n{m.mention}: ❌ 크래시..  -**{bet}** 코인 손실"
                     result = "실패"
 
                 summary_lines.append(line)
@@ -245,13 +244,11 @@ class CrashRound:
                 await self.bot.get_cog("Coins").refresh_leaderboard()
 
                 # ▶ 각 참가자 결과 로그
-                try:
-                    await log_to_channel(
-                        self.bot,
-                        f"{m.display_name}님 베팅 {bet}코인 → 결과: {result}, {net}코인"
-                    )
-                except Exception:
-                    pass
+                participant_display = f"{m.display_name}님"
+                await log_to_channel(
+                    self.bot,
+                    f"📊 [크래시 결과] {participant_display} 베팅 {bet}코인 → 결과: {result}, {net}코인"
+                )
 
             # 최종 메시지 전송
             final_msg = "🛑 **라운드 종료!**\n\n" + "\n".join(summary_lines)
@@ -263,6 +260,7 @@ class CrashRound:
             self.active = False
             self.msg = None
             self.view = None
+
 
 class CrashGame(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -280,12 +278,14 @@ class CrashGame(commands.Cog):
             return await interaction.response.send_message("❌ 유효한 베팅 금액이 아니거나 잔액이 부족합니다.", ephemeral=True)
 
         self.round.join(interaction.user, bet)
-        msg = f"✅ {bet} 코인으로 크래시 게임에 참가하셨습니다!"
-        self.round.join(interaction.user, bet)
+        user_display = f"{interaction.user.display_name}님"
         # ▶ Log here: who joined and their bet
-        await log_to_channel(self.bot,
-                             f"👥 {interaction.user.name}님이 {bet}코인으로 크래시 참가 (대기열 {len(self.round.queue)}명)"
-                             )
+        await log_to_channel(
+            self.bot,
+            f"👥 [크래시 참가] {user_display}이(가) {bet}코인으로 크래시 참가 (대기열 {len(self.round.queue)}명)"
+        )
+
+        msg = f"✅ {bet} 코인으로 크래시 게임에 참가하셨습니다!"
         if len(self.round.queue) == 1:
             msg += " \n20초 후 게임이 시작됩니다."
         await interaction.response.send_message(msg, ephemeral=True)
@@ -296,6 +296,7 @@ class CrashGame(commands.Cog):
             if len(self.round.queue) == 1:
                 ann += " \n20초 후 시작됩니다."
             await ch.send(ann)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(CrashGame(bot))

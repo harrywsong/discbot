@@ -1,12 +1,11 @@
-# cogs/custom_game.py new
+# cogs/custom_game.py
 
 import asyncio
 import random
-from typing import Optional
+from typing import Optional, List, Union
 from utils.henrik import henrik_get
 
 import pytz
-
 import discord
 from discord import app_commands, AllowedMentions
 from discord.ext import commands
@@ -15,15 +14,11 @@ from datetime import datetime, timedelta, timezone
 from utils import config
 from utils.logger import log_to_channel
 
-# ── Constants & Globals ─────────────────────────────────
+# ── Constants ─────────────────────────────────
 
 MAPS = [
     "Ascent", "Haven", "Icebox", "Lotus", "Pearl", "Split", "Sunset"
 ]
-
-#    "Bind", "Haven", "Split", "Ascent", "Icebox", "Breeze", "Fracture", "Pearl", "Lotus", "Sunset", "Abyss"
-
-current_custom_game = None  # Tracks the active CustomGameView
 
 
 def is_privileged(user: discord.Member, creator: discord.Member) -> bool:
@@ -34,7 +29,7 @@ def is_privileged(user: discord.Member, creator: discord.Member) -> bool:
 
 
 class FakeUser:
-    """Represents a bot‐added placeholder player."""
+    """Represents a bot‑added placeholder player."""
     def __init__(self, name: str):
         self.name = name
 
@@ -60,15 +55,16 @@ class CustomGameView(discord.ui.View):
         self.creator = creator
         self.interaction = interaction
         self.voice_channel = voice_channel
-        self.participants: list[discord.Member | FakeUser] = []
+        # participants: either discord.Member or FakeUser
+        self.participants: List[Union[discord.Member, FakeUser]] = []
         self.waitlist_open: bool = False
-        self.waitlist: list[discord.Member] = []
+        self.waitlist: List[discord.Member] = []
         self.ping_schedule = {10: False, 5: False, 1: False}
-        self.start_time: str | None = None
-        self.voice_check_start: datetime | None = None
-        self.voice_check_end: datetime | None = None
-        self.lobby_message: discord.Message | None = None
-        self.warning_task: asyncio.Task | None = None
+        self.start_time: Optional[str] = None
+        self.voice_check_start: Optional[datetime] = None
+        self.voice_check_end: Optional[datetime] = None
+        self.lobby_message: Optional[discord.Message] = None
+        self.warning_task: Optional[asyncio.Task] = None
         self.rebuild_buttons()
 
     def rebuild_buttons(self):
@@ -77,9 +73,12 @@ class CustomGameView(discord.ui.View):
             self.add_item(self.join_button)
         elif self.waitlist_open:
             self.add_item(self.waitlist_button)
+
         self.add_item(self.leave_button)
+
         if self.waitlist_open:
             self.add_item(self.waitlist_cancel_button)
+
         self.add_item(CancelCustomGameButton(self))
 
     def format_description(self) -> str:
@@ -100,7 +99,7 @@ class CustomGameView(discord.ui.View):
         assert self.lobby_message, "Lobby message not set"
         await self.lobby_message.edit(
             embed=discord.Embed(
-                title="🕹️ 발로란트 커스텀",
+                title="🕹️ 발로란트 내전",
                 description=self.format_description(),
                 color=discord.Color.green()
             ),
@@ -117,7 +116,12 @@ class CustomGameView(discord.ui.View):
             )
 
         self.participants.append(interaction.user)
-        await log_to_channel(interaction.client, f"{interaction.user.display_name}님이 내전에 참가했습니다.")
+        # ▶ Log: 참가
+        await log_to_channel(
+            interaction.client,
+            f"🟢 [내전] {interaction.user.display_name}님이 내전에 참가했습니다."
+        )
+
         self.rebuild_buttons()
         await self.update_embed()
         await interaction.response.send_message("✅ 참가 완료!", ephemeral=True)
@@ -128,7 +132,11 @@ class CustomGameView(discord.ui.View):
             return await interaction.response.send_message("참가 상태가 아닙니다.", ephemeral=True)
 
         self.participants.remove(interaction.user)
-        await log_to_channel(interaction.client, f"{interaction.user.display_name}님이 내전 참가를 취소했습니다.")
+        # ▶ Log: 참가 취소
+        await log_to_channel(
+            interaction.client,
+            f"🔴 [내전] {interaction.user.display_name}님이 내전 참가를 취소했습니다."
+        )
 
         # Auto‑promote from waitlist
         if self.waitlist:
@@ -167,13 +175,22 @@ class CancelCustomGameButton(discord.ui.Button):
         if not is_privileged(interaction.user, self.parent.creator):
             return await interaction.response.send_message("❌ 권한이 없습니다.", ephemeral=True)
 
-        global current_custom_game
+        # 1) Clear the lobby messages in this channel
         await interaction.channel.purge(limit=100)
         await interaction.channel.send("✅ **내전이 취소되었습니다.**")
-        await log_to_channel(interaction.client, f"{interaction.user.display_name}님이 내전을 취소했습니다.")
+
+        # ▶ Log: 내전 취소
+        await log_to_channel(
+            interaction.client,
+            f"❌ [내전] {interaction.user.display_name}님이 내전을 취소했습니다."
+        )
+
+        # 2) Cancel any warning tasks
         if self.parent.warning_task:
             self.parent.warning_task.cancel()
-        current_custom_game = None
+
+        # 3) Clear bot.current_custom_game
+        interaction.client.current_custom_game = None
 
 
 # ── Cog Definition ─────────────────────────────────────
@@ -247,9 +264,9 @@ class CustomGame(commands.Cog):
 
             # 7) Build and send lobby as a normal bot message
             view = CustomGameView(interaction.user, interaction, vc)
-            view.start_time        = display
+            view.start_time = display
             view.voice_check_start = utc_dt - timedelta(minutes=60)
-            view.voice_check_end   = utc_dt
+            view.voice_check_end = utc_dt
 
             channel = interaction.channel
             lobby_embed = discord.Embed(
@@ -266,15 +283,17 @@ class CustomGame(commands.Cog):
             view.lobby_message = lobby_msg
             self.bot.add_view(view, message_id=lobby_msg.id)
 
-            # 8) Activate global state & scheduled tasks
-            self.bot.current_custom_game = view  # <-- Save to the bot object for global access
+            # 8) Save to the bot object for global access
+            self.bot.current_custom_game = view
 
+            # 9) Schedule warnings / voice checks
             view.warning_task = asyncio.create_task(self._warning_30min(view))
             asyncio.create_task(self._monitor_voice_check(view))
 
+            # ▶ Log: 내전 시작
             await log_to_channel(
                 self.bot,
-                f"{interaction.user.display_name}님이 내전을 열었습니다:\n{display}"
+                f"🕹️ [내전] {interaction.user.display_name}님이 내전을 열었습니다. 시간:\n{display}"
             )
 
         except Exception as e:
@@ -283,31 +302,41 @@ class CustomGame(commands.Cog):
                 await interaction.response.send_message(f"❌ 오류: {e}", ephemeral=True)
             else:
                 await interaction.followup.send(f"❌ 오류: {e}", ephemeral=True)
-            await log_to_channel(self.bot, f"⚠️ slash_start_custom 오류: {e}")
+            await log_to_channel(self.bot, f"⚠️ [내전 오류] slash_start_custom: {e}")
 
     async def _warning_30min(self, view: CustomGameView):
         """Sends 30‑minute warning before start."""
+        while getattr(self.bot, "current_custom_game", None) is not view:
+            await asyncio.sleep(0.5)
+
         warn_time = view.voice_check_end - timedelta(minutes=30)
         delay = (warn_time - datetime.now(timezone.utc)).total_seconds()
         if delay > 0:
             await asyncio.sleep(delay)
-        if current_custom_game is view:
-            mentions = " ".join(p.mention for p in view.participants if isinstance(p, discord.Member))
+
+        if getattr(self.bot, "current_custom_game", None) is view:
+            mentions = " ".join(
+                p.mention for p in view.participants
+                if isinstance(p, discord.Member)
+            )
             if mentions:
-                await view.interaction.channel.send(f"⏰ 내전 시작 30분 전입니다!\n {mentions}\n이제부터 취소 불가합니다.")
-            await log_to_channel(self.bot, "30분 전 경고 발송")
+                await view.interaction.channel.send(
+                    f"⏰ 내전 시작 30분 전입니다!\n{mentions}\n이제부터 취소 불가합니다.",
+                    allowed_mentions=AllowedMentions(users=True)
+                )
+            # ▶ Log: 30분 전 경고
+            await log_to_channel(self.bot, "⏰ [내전] 30분 전 경고 발송")
 
     async def _monitor_voice_check(self, view: CustomGameView):
         """Checks at 10/5/1 minutes to ping users not in VC."""
-        # wait until view is active
-        while current_custom_game is not view:
+        while getattr(self.bot, "current_custom_game", None) is not view:
             await asyncio.sleep(0.5)
-        # wait until 60 min before
+
         delay = (view.voice_check_start - datetime.now(timezone.utc)).total_seconds()
         if delay > 0:
             await asyncio.sleep(delay)
 
-        while current_custom_game is view and datetime.now(timezone.utc) < view.voice_check_end:
+        while getattr(self.bot, "current_custom_game", None) is view and datetime.now(timezone.utc) < view.voice_check_end:
             remaining = (view.voice_check_end - datetime.now(timezone.utc)).total_seconds() / 60
             for mark in (10, 5, 1):
                 if not view.ping_schedule[mark] and abs(remaining - mark) < 0.5:
@@ -323,7 +352,8 @@ class CustomGame(commands.Cog):
                             allowed_mentions=AllowedMentions(users=True)
                         )
                     view.ping_schedule[mark] = True
-                    await log_to_channel(self.bot, f"{mark}분 전 알림 발송")
+                    # ▶ Log: 특정 분 전 알림
+                    await log_to_channel(self.bot, f"⏰ [내전] {mark}분 전 알림 발송")
             await asyncio.sleep(30)
 
     @app_commands.command(
@@ -403,38 +433,48 @@ class CustomGame(commands.Cog):
 
     @app_commands.command(name="맵추첨", description="랜덤 맵을 뽑습니다.")
     async def slash_roll_map(self, interaction: discord.Interaction):
-        if not current_custom_game:
+        if not getattr(self.bot, "current_custom_game", None):
             return await interaction.response.send_message("❌ 활성 내전이 없습니다.", ephemeral=True)
-        if not is_privileged(interaction.user, current_custom_game.creator):
+        if not is_privileged(interaction.user, self.bot.current_custom_game.creator):
             return await interaction.response.send_message("❌ 권한이 없습니다.", ephemeral=True)
         choice = random.choice(MAPS)
         await interaction.response.send_message(f"🗺️ 오늘의 맵: **{choice}**!")
 
     @app_commands.command(name="내전대기", description="현재 내전의 대기열을 엽니다.")
     async def slash_open_waitlist(self, interaction: discord.Interaction):
-        if not current_custom_game:
+        if not getattr(self.bot, "current_custom_game", None):
             return await interaction.response.send_message("❌ 활성 내전이 없습니다.", ephemeral=True)
-        if not is_privileged(interaction.user, current_custom_game.creator):
+        if not is_privileged(interaction.user, self.bot.current_custom_game.creator):
             return await interaction.response.send_message("❌ 권한이 없습니다.", ephemeral=True)
-        if current_custom_game.waitlist_open:
+        if self.bot.current_custom_game.waitlist_open:
             return await interaction.response.send_message("❌ 이미 대기열이 열려 있습니다.", ephemeral=True)
-        current_custom_game.waitlist_open = True
-        current_custom_game.rebuild_buttons()
-        await current_custom_game.update_embed()
+        self.bot.current_custom_game.waitlist_open = True
+        self.bot.current_custom_game.rebuild_buttons()
+        await self.bot.current_custom_game.update_embed()
         await interaction.response.send_message("✅ 대기열이 활성화되었습니다.", ephemeral=True)
 
     @app_commands.command(name="봇추가", description="빈 자리에 가짜 유저를 추가합니다.")
-    @commands.has_permissions(administrator=True)
+    @app_commands.check(lambda inter: inter.user.guild_permissions.administrator)
     async def slash_add_bots(self, interaction: discord.Interaction):
-        current_custom_game = getattr(self.bot, "current_custom_game", None)
-        if not current_custom_game:
+        custom_game_view = getattr(self.bot, "current_custom_game", None)
+        if not custom_game_view:
             return await interaction.response.send_message("❌ 활성 내전이 없습니다.", ephemeral=True)
-        needed = 10 - len(current_custom_game.participants)
-        for i in range(1, needed):
-            current_custom_game.participants.append(FakeUser(f"플레이어{i}"))
-        current_custom_game.rebuild_buttons()
-        await current_custom_game.update_embed()
-        await interaction.response.send_message(f"✅ 가짜 유저 {needed - 2}명 추가되었습니다.", ephemeral=True)
+
+        needed = 10 - len(custom_game_view.participants)
+        if needed <= 0:
+            return await interaction.response.send_message("❌ 이미 10명이 참가 중입니다.", ephemeral=True)
+
+        for i in range(1, needed + 1):
+            custom_game_view.participants.append(FakeUser(f"플레이어{i}"))
+
+        custom_game_view.rebuild_buttons()
+        await custom_game_view.update_embed()
+        # ▶ Log: 봇 추가
+        await log_to_channel(
+            self.bot,
+            f"🤖 [내전] 가짜 유저 {needed}명 추가됨"
+        )
+        await interaction.response.send_message(f"✅ 가짜 유저 {needed}명 추가되었습니다.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
