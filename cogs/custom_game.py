@@ -361,26 +361,38 @@ class CustomGame(commands.Cog):
     async def slash_save_custom_games(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         try:
+            # 1) Fetch invoking user's puuid
             async with self.bot.db.acquire() as conn:
-                row = await conn.fetchrow("SELECT riot_name, riot_tag, puuid FROM players WHERE discord_id = $1",
-                                          str(interaction.user.id))
+                row = await conn.fetchrow(
+                    "SELECT riot_name, riot_tag, puuid FROM players WHERE discord_id = $1",
+                    str(interaction.user.id)
+                )
             if not row:
-                await interaction.followup.send("❌ 먼저 `/연동` 명령어로 계정을 연동해 주세요.", ephemeral=True)
+                await interaction.followup.send(
+                    "❌ 먼저 `/연동` 명령어로 계정을 연동해 주세요.",
+                    ephemeral=True
+                )
                 return
 
             riot_name = row["riot_name"]
             riot_tag = row["riot_tag"]
             puuid = row["puuid"]
 
+            # 2) Fetch recent matches from Henrik
             data = await henrik_get(f"/valorant/v3/by-puuid/matches/na/{puuid}")
             if not data or "data" not in data:
-                await interaction.followup.send("❌ 최근 경기 정보를 가져오지 못했습니다.", ephemeral=True)
+                await interaction.followup.send(
+                    "❌ 최근 경기 정보를 가져오지 못했습니다.",
+                    ephemeral=True
+                )
                 return
 
+            # 3) Build a set of all linked puuids
             async with self.bot.db.acquire() as conn:
                 rows = await conn.fetch("SELECT puuid FROM players")
-                linked_puuids = set(r["puuid"] for r in rows)
+                linked_puuids = {r["puuid"] for r in rows}
 
+            # 4) Filter out only full 10‐player matches where every puuid is linked
             custom_candidates = []
             for match in data["data"]:
                 players = match.get("players", {}).get("all_players", [])
@@ -388,6 +400,8 @@ class CustomGame(commands.Cog):
                     custom_candidates.append(match)
 
             count = 0
+            # 5) Insert up to 3 full‐party matches into DB (match_players),
+            #    and update each participant’s last_active to the match’s timestamp
             async with self.bot.db.acquire() as conn:
                 for match in custom_candidates[:3]:
                     meta = match["metadata"]
@@ -396,68 +410,119 @@ class CustomGame(commands.Cog):
                     map_name = meta.get("map", "?")
                     rounds = meta.get("rounds_played", 0)
 
-                    player_data = next((p for p in match["players"]["all_players"] if p["puuid"] == puuid), None)
+                    # For reference: the invoking player's data (to compute their HS%, ADR, etc.)
+                    player_data = next(
+                        (p for p in match["players"]["all_players"] if p["puuid"] == puuid),
+                        None
+                    )
                     if not player_data:
                         continue
 
                     stats = player_data["stats"]
-                    kda = f"{stats['kills']}/{stats['deaths']}/{stats['assists']}"
-                    hs = stats.get("headshots", 0)
-                    bs = stats.get("bodyshots", 0)
-                    ls = stats.get("legshots", 0)
-                    shots = hs + bs + ls
-                    hs_pct = (hs / shots) * 100 if shots else 0
-                    adr = player_data.get("damage_made", 0) // max(rounds, 1)
+                    # These two lines aren’t strictly needed for the inserts below,
+                    # but left here in case you want to log or use them:
+                    _kda = f"{stats['kills']}/{stats['deaths']}/{stats['assists']}"
+                    _hs = stats.get("headshots", 0)
+                    _bs = stats.get("bodyshots", 0)
+                    _ls = stats.get("legshots", 0)
+                    _shots = _hs + _bs + _ls
+                    _hs_pct = (_hs / _shots) * 100 if _shots else 0
+                    _adr = player_data.get("damage_made", 0) // max(rounds, 1)
 
-                    for player_data in match["players"]["all_players"]:
-                        puuid2 = player_data["puuid"]
-                        riot_name2 = player_data.get("name", "?")
-                        riot_tag2 = player_data.get("tag", "?")
-                        agent = player_data.get("character", "?")
-                        stats = player_data["stats"]
-                        kda = f"{stats['kills']}/{stats['deaths']}/{stats['assists']}"
-                        hs = stats.get("headshots", 0)
-                        bs = stats.get("bodyshots", 0)
-                        ls = stats.get("legshots", 0)
+                    # Determine each team’s final rounds_won (adjust keys if needed)
+                    team1_score = match.get("teams", {}).get("red", {}).get("rounds_won", 0)
+                    team2_score = match.get("teams", {}).get("blue", {}).get("rounds_won", 0)
+
+                    for p in match["players"]["all_players"]:
+                        puuid2 = p["puuid"]
+                        riot_name2 = p.get("name", "?")
+                        riot_tag2 = p.get("tag", "?")
+                        agent = p.get("character", "?")
+                        stats2 = p["stats"]
+
+                        kills = stats2.get("kills", 0)
+                        deaths = stats2.get("deaths", 0)
+                        assists = stats2.get("assists", 0)
+                        score = stats2.get("score", 0)
+                        kda = f"{kills}/{deaths}/{assists}"
+
+                        hs = stats2.get("headshots", 0)
+                        bs = stats2.get("bodyshots", 0)
+                        ls = stats2.get("legshots", 0)
                         shots = hs + bs + ls
                         hs_pct = (hs / shots) * 100 if shots else 0
-                        adr = player_data.get("damage_made", 0) // max(rounds, 1)
-                        team = player_data.get("team", "?")
+                        rounds_played = meta.get("rounds_played", 0) or 1
+                        adr = p.get("damage_made", 0) // rounds_played
+
+                        team = p.get("team", "?")
                         won = match.get("teams", {}).get(team.lower(), {}).get("has_won", False)
                         round_count = meta.get("rounds_played", 0)
-                        tier = player_data.get("currenttier_patched", None)
+                        tier = p.get("currenttier_patched", None)
 
-                        await conn.execute("""
-                                           INSERT INTO match_players (match_id, puuid, riot_name, riot_tag, map, agent,
-                                                                      kda, score, adr, hs_pct, team, won, round_count,
-                                                                      tier, game_start)
-                                           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                                                   $15) ON CONFLICT (match_id, puuid) DO NOTHING
-                                           """,
-                                           match_id,
-                                           puuid2,
-                                           riot_name2,
-                                           riot_tag2,
-                                           map_name,
-                                           agent,
-                                           kda,
-                                           stats["score"],
-                                           adr,
-                                           hs_pct,
-                                           team,
-                                           won,
-                                           round_count,
-                                           tier,
-                                           game_start
-                                           )
+                        # Insert into match_players table
+                        await conn.execute(
+                            """
+                            INSERT INTO match_players (
+                              match_id, puuid, riot_name, riot_tag, map, agent,
+                              kda, kills, deaths, assists, score, adr, hs_pct,
+                              team, won, round_count, team1_score, team2_score,
+                              tier, game_start
+                            )
+                            VALUES (
+                              $1, $2, $3, $4, $5, $6,
+                              $7, $8, $9, $10, $11, $12, $13,
+                              $14, $15, $16, $17, $18,
+                              $19, $20
+                            ) ON CONFLICT (match_id, puuid) DO NOTHING
+                            """,
+                            match_id,
+                            puuid2,
+                            riot_name2,
+                            riot_tag2,
+                            map_name,
+                            agent,
+                            kda,
+                            kills,
+                            deaths,
+                            assists,
+                            score,
+                            adr,
+                            hs_pct,
+                            team,
+                            won,
+                            round_count,
+                            team1_score,
+                            team2_score,
+                            tier,
+                            game_start
+                        )
+
+                        # Immediately after inserting this player’s row,
+                        # update their last_active to the match’s timestamp
+                        await conn.execute(
+                            "UPDATE players SET last_active = $1 WHERE puuid = $2",
+                            game_start,
+                            puuid2
+                        )
 
                     count += 1
 
-            await interaction.followup.send(f"✅ 최근 내전 {count}경기를 기록했습니다.", ephemeral=True)
+            # 6) Now that the database is fully updated, purge the previous lobby messages
+            #    (adjust the limit as needed; here we remove up to 100)
+            await interaction.channel.purge(limit=100)
+            # Send a confirmation that deletion occurred
+            await interaction.channel.send("✅ 이전 내전 메시지들을 삭제했습니다.")
+
+            # 7) Finally, let the user know how many games were recorded
+            await interaction.followup.send(
+                f"✅ 최근 내전 {count}경기를 기록했습니다.",
+                ephemeral=True
+            )
 
         except Exception as e:
             await interaction.followup.send(f"❌ 오류 발생: {e}", ephemeral=True)
             await log_to_channel(self.bot, f"❌ [내전종료] 실패: {e}")
+
 
     @app_commands.command(name="맵추첨", description="랜덤 맵을 뽑습니다.")
     async def slash_roll_map(self, interaction: discord.Interaction):
