@@ -10,6 +10,8 @@ from discord.ext import commands
 import aiohttp
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from math import ceil
+from itertools import combinations
 
 from utils.logger import log_to_channel  # import logger
 
@@ -171,14 +173,14 @@ class AutoBalanceCog(commands.Cog):
                         "SELECT visible_mmr, riot_name, riot_tag FROM players WHERE discord_id = $1",
                         str(member.id)
                     )
-                    if not row:
+                    if not row or row["visible_mmr"] is None:
                         await interaction.followup.send(
-                            f"❌ {member.display_name} 님: DB에서 정보를 찾을 수 없습니다.",
+                            f"❌ {member.display_name}: Missing MMR or account info in database.",
                             ephemeral=True
                         )
                         await log_to_channel(
                             self.bot,
-                            f"❌ [오토밸런스] {member.display_name} 님 DB 정보 없음"
+                            f"❌ [오토밸런스] {member.display_name} DB info missing or invalid"
                         )
                         return
 
@@ -253,13 +255,12 @@ class AutoBalanceCog(commands.Cog):
             )
             return
 
-        # 4) Find best balance using combinations
-        from itertools import combinations
-
+        # 4) Find best balance using combinations (no exclusion for odd numbers)
+        team_size = len(player_infos) // 2
         best_diff = float("inf")
-        best_team_a = []
-        best_team_b = []
-        for team_a in combinations(player_infos, 5):
+        best_team_a, best_team_b = [], []
+
+        for team_a in combinations(player_infos, team_size):
             team_b = [p for p in player_infos if p not in team_a]
             diff = abs(sum(p["mmr"] for p in team_a) - sum(p["mmr"] for p in team_b))
             if diff < best_diff:
@@ -267,10 +268,16 @@ class AutoBalanceCog(commands.Cog):
                 best_team_a = list(team_a)
                 best_team_b = list(team_b)
 
+        # Pretty function with mentions
         def pretty(team):
-            return "\n".join([f"{p['riotid']} (MMR: {p['mmr']})" for p in team])
+            return "\n".join([
+                f"{riotid_to_member[p['riotid']].mention} ({p['riotid']}, MMR: {p['mmr']})"
+                if p["riotid"] in riotid_to_member
+                else f"{p['riotid']} (MMR: {p['mmr']})"
+                for p in team
+            ])
 
-        # 5) Map riotid back to real Member objects for moving
+        # Map members for move buttons
         team_a_members = [
             riotid_to_member[p["riotid"]]
             for p in best_team_a
@@ -282,19 +289,23 @@ class AutoBalanceCog(commands.Cog):
             if p["riotid"] in riotid_to_member
         ]
 
+        # Build and send embed
+        description = (
+            f"총 인원: {len(player_infos)}명\n"
+            f"최종 팀 차이: **{best_diff}**\n\n"
+            f"**팀 A ({len(best_team_a)}명):**\n{pretty(best_team_a)}\n\n"
+            f"**팀 B ({len(best_team_b)}명):**\n{pretty(best_team_b)}"
+        )
+
         embed = discord.Embed(
             title="✅ 자동 팀 밸런스 결과",
-            description=(
-                f"최종 팀 차이: **{best_diff}**\n\n"
-                f"**팀 A:**\n{pretty(best_team_a)}\n\n"
-                f"**팀 B:**\n{pretty(best_team_b)}"
-            ),
+            description=description,
             color=discord.Color.green()
         )
         view = MoveTeamsView(team_a_members, team_b_members)
         await interaction.followup.send(embed=embed, view=view)
 
-        # 6) Log successful execution
+        # Log success
         await log_to_channel(
             self.bot,
             f"✅ [오토밸런스] {user_display}님 팀 밸런스 실행 (차이: {best_diff})"

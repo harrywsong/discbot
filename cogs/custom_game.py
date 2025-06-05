@@ -356,80 +356,108 @@ class CustomGame(commands.Cog):
                     await log_to_channel(self.bot, f"⏰ [내전] {mark}분 전 알림 발송")
             await asyncio.sleep(30)
 
-    @app_commands.command(
-        name="내전종료",
-        description="내전 종료하고, 참가한 모든 유저의 MMR을 업데이트합니다."
-    )
-    @app_commands.describe(region_hint="(선택) 지역(na/eu/kr 등)")
-    async def slash_close_customs(self, interaction: discord.Interaction, region_hint: Optional[str] = "na"):
+    @app_commands.command(name="내전종료", description="최근 커스텀 경기 3개를 기록합니다.")
+    @app_commands.check(lambda i: i.user.guild_permissions.administrator)
+    async def slash_save_custom_games(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         try:
-            user = interaction.user
             async with self.bot.db.acquire() as conn:
-                row = await conn.fetchrow(
-                    "SELECT riot_name, riot_tag, puuid FROM players WHERE discord_id = $1",
-                    str(user.id))
+                row = await conn.fetchrow("SELECT riot_name, riot_tag, puuid FROM players WHERE discord_id = $1",
+                                          str(interaction.user.id))
             if not row:
-                await interaction.followup.send("❌ Riot account not linked. Use `/연동` first.", ephemeral=True)
+                await interaction.followup.send("❌ 먼저 `/연동` 명령어로 계정을 연동해 주세요.", ephemeral=True)
                 return
 
+            riot_name = row["riot_name"]
+            riot_tag = row["riot_tag"]
             puuid = row["puuid"]
 
-            # 1. Fetch last 5 custom matches
-            endpoint = f"/valorant/v3/by-puuid/matches/{region_hint}/{puuid}?filter=custom"
-            data = await henrik_get(endpoint)
-            if not data or data.get("status") != 200 or not data.get("data"):
-                await interaction.followup.send("❌ Could not fetch recent custom matches.", ephemeral=True)
+            data = await henrik_get(f"/valorant/v3/by-puuid/matches/na/{puuid}")
+            if not data or "data" not in data:
+                await interaction.followup.send("❌ 최근 경기 정보를 가져오지 못했습니다.", ephemeral=True)
                 return
 
-            matches = data["data"][:5]
-            if not matches:
-                await interaction.followup.send("⚠️ No recent custom matches found.", ephemeral=True)
-                return
+            async with self.bot.db.acquire() as conn:
+                rows = await conn.fetch("SELECT puuid FROM players")
+                linked_puuids = set(r["puuid"] for r in rows)
 
-            processed_count = 0
-            already_analyzed = 0
-            error_matches = []
+            custom_candidates = []
+            for match in data["data"]:
+                players = match.get("players", {}).get("all_players", [])
+                if len(players) == 10 and all(p["puuid"] in linked_puuids for p in players):
+                    custom_candidates.append(match)
 
-            for match in matches:
-                meta = match.get("metadata", {})
-                match_id = meta.get("matchid", None)
-                if not match_id:
-                    continue
-                # 2. Check if already analyzed
-                async with self.bot.db.acquire() as conn:
-                    exists = await conn.fetchval(
-                        "SELECT 1 FROM analyzed_matches WHERE match_id = $1", match_id)
-                if exists:
-                    already_analyzed += 1
-                    continue
+            count = 0
+            async with self.bot.db.acquire() as conn:
+                for match in custom_candidates[:3]:
+                    meta = match["metadata"]
+                    match_id = meta["matchid"]
+                    game_start = meta.get("game_start", datetime.utcnow())
+                    map_name = meta.get("map", "?")
+                    rounds = meta.get("rounds_played", 0)
 
-                # 3. Analyze: process and update MMR for all involved
-                try:
-                    # Use your method (can adapt for custom games if needed)
-                    await self.process_and_store_match(match_id, region_hint)
-                    async with self.bot.db.acquire() as conn:
-                        await conn.execute(
-                            "INSERT INTO analyzed_matches (match_id) VALUES ($1)", match_id)
-                    processed_count += 1
-                except Exception as e:
-                    error_matches.append(match_id)
-                    print(f"Error analyzing match {match_id}: {e}")
-                    continue
+                    player_data = next((p for p in match["players"]["all_players"] if p["puuid"] == puuid), None)
+                    if not player_data:
+                        continue
 
-            # 4. Respond with summary
-            message = (
-                f"✅ 내전 종료 완료!\n"
-                f"분석한 내전 수: `{processed_count}`\n"
-                f"이미 분석된 내전 수: `{already_analyzed}`"
-            )
-            if error_matches:
-                message += f"\n분석 실패한 매치: {', '.join(error_matches)}"
+                    stats = player_data["stats"]
+                    kda = f"{stats['kills']}/{stats['deaths']}/{stats['assists']}"
+                    hs = stats.get("headshots", 0)
+                    bs = stats.get("bodyshots", 0)
+                    ls = stats.get("legshots", 0)
+                    shots = hs + bs + ls
+                    hs_pct = (hs / shots) * 100 if shots else 0
+                    adr = player_data.get("damage_made", 0) // max(rounds, 1)
 
-            await interaction.followup.send(message, ephemeral=True)
+                    for player_data in match["players"]["all_players"]:
+                        puuid2 = player_data["puuid"]
+                        riot_name2 = player_data.get("name", "?")
+                        riot_tag2 = player_data.get("tag", "?")
+                        agent = player_data.get("character", "?")
+                        stats = player_data["stats"]
+                        kda = f"{stats['kills']}/{stats['deaths']}/{stats['assists']}"
+                        hs = stats.get("headshots", 0)
+                        bs = stats.get("bodyshots", 0)
+                        ls = stats.get("legshots", 0)
+                        shots = hs + bs + ls
+                        hs_pct = (hs / shots) * 100 if shots else 0
+                        adr = player_data.get("damage_made", 0) // max(rounds, 1)
+                        team = player_data.get("team", "?")
+                        won = match.get("teams", {}).get(team.lower(), {}).get("has_won", False)
+                        round_count = meta.get("rounds_played", 0)
+                        tier = player_data.get("currenttier_patched", None)
+
+                        await conn.execute("""
+                                           INSERT INTO match_players (match_id, puuid, riot_name, riot_tag, map, agent,
+                                                                      kda, score, adr, hs_pct, team, won, round_count,
+                                                                      tier, game_start)
+                                           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                                                   $15) ON CONFLICT (match_id, puuid) DO NOTHING
+                                           """,
+                                           match_id,
+                                           puuid2,
+                                           riot_name2,
+                                           riot_tag2,
+                                           map_name,
+                                           agent,
+                                           kda,
+                                           stats["score"],
+                                           adr,
+                                           hs_pct,
+                                           team,
+                                           won,
+                                           round_count,
+                                           tier,
+                                           game_start
+                                           )
+
+                    count += 1
+
+            await interaction.followup.send(f"✅ 최근 내전 {count}경기를 기록했습니다.", ephemeral=True)
 
         except Exception as e:
-            await interaction.followup.send(f"❌ Unexpected error: {e}", ephemeral=True)
+            await interaction.followup.send(f"❌ 오류 발생: {e}", ephemeral=True)
+            await log_to_channel(self.bot, f"❌ [내전종료] 실패: {e}")
 
     @app_commands.command(name="맵추첨", description="랜덤 맵을 뽑습니다.")
     async def slash_roll_map(self, interaction: discord.Interaction):
