@@ -9,7 +9,7 @@ import asyncio
 
 from utils import config
 from utils.logger import log_to_channel
-from utils.henrik import henrik_get
+import pytz
 
 
 class DailyCoinsView(discord.ui.View):
@@ -19,75 +19,81 @@ class DailyCoinsView(discord.ui.View):
 
     @discord.ui.button(label="오늘의 코인 받기", style=discord.ButtonStyle.primary, custom_id="dailycoins_button")
     async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        user = interaction.user
-        now_utc = datetime.now(timezone.utc)
+        print("Button pressed (coins/xp)")
+        try:
+            await interaction.response.defer(ephemeral=True)
+            user = interaction.user
+            now_utc = datetime.now(timezone.utc)
 
-        eastern = ZoneInfo("America/New_York")
-        today_et = now_utc.astimezone(eastern).date()
+            eastern = pytz.timezone("America/New_York")  # ← this line changed!
+            today_et = now_utc.astimezone(eastern).date()
 
-        # check last claim
-        row = await self.bot.db.fetchrow(
-            "SELECT last_claim FROM daily_coin_claim WHERE user_id = $1",
-            user.id
-        )
-        if row and row["last_claim"].astimezone(eastern).date() == today_et:
-            next_midnight = datetime(
-                year=today_et.year,
-                month=today_et.month,
-                day=today_et.day,
-                tzinfo=eastern
-            ) + timedelta(days=1)
-            delta = next_midnight - now_utc.astimezone(eastern)
-            hrs, rem = divmod(delta.seconds, 3600)
-            mins = rem // 60
-            return await interaction.followup.send(
-                f"⏳ 이미 오늘의 보상을 받으셨습니다. 다음 보상은 `{hrs}시간 {mins}분` 후 자정(12 AM 동부 시간)에 리셋됩니다.",
-                ephemeral=True
+            # check last claim
+            row = await self.bot.db.fetchrow(
+                "SELECT last_claim FROM daily_coin_claim WHERE user_id = $1",
+                user.id
+            )
+            if row and row["last_claim"].astimezone(eastern).date() == today_et:
+                next_midnight = datetime(
+                    year=today_et.year,
+                    month=today_et.month,
+                    day=today_et.day,
+                    tzinfo=eastern
+                ) + timedelta(days=1)
+                delta = next_midnight - now_utc.astimezone(eastern)
+                hrs, rem = divmod(delta.seconds, 3600)
+                mins = rem // 60
+                return await interaction.followup.send(
+                    f"⏳ 이미 오늘의 보상을 받으셨습니다. 다음 보상은 `{hrs}시간 {mins}분` 후 자정(12 AM 동부 시간)에 리셋됩니다.",
+                    ephemeral=True
+                )
+
+            # grant coins
+            amount = config.DAILY_COINS_AMOUNT
+            await self.bot.db.execute(
+                """
+                INSERT INTO coins (user_id, balance)
+                VALUES ($1, $2) ON CONFLICT (user_id) DO
+                UPDATE
+                    SET balance = coins.balance + EXCLUDED.balance
+                """,
+                user.id, amount
+            )
+            await self.bot.db.execute(
+                """
+                INSERT INTO daily_coin_claim (user_id, last_claim)
+                VALUES ($1, $2) ON CONFLICT (user_id) DO
+                UPDATE
+                    SET last_claim = EXCLUDED.last_claim
+                """,
+                user.id, now_utc
             )
 
-        # grant coins
-        amount = config.DAILY_COINS_AMOUNT
-        await self.bot.db.execute(
-            """
-            INSERT INTO coins (user_id, balance)
-            VALUES ($1, $2)
-            ON CONFLICT (user_id) DO UPDATE
-              SET balance = coins.balance + EXCLUDED.balance
-            """,
-            user.id, amount
-        )
-        await self.bot.db.execute(
-            """
-            INSERT INTO daily_coin_claim (user_id, last_claim)
-            VALUES ($1, $2)
-            ON CONFLICT (user_id) DO UPDATE
-              SET last_claim = EXCLUDED.last_claim
-            """,
-            user.id, now_utc
-        )
+            await interaction.followup.send(
+                f"✅ 오늘의 **{amount}** 코인을 받으셨습니다!", ephemeral=True
+            )
+            user_display = f"{user.display_name}님"
+            await log_to_channel(
+                self.bot,
+                f"🎁 [오늘의 코인] {user_display}이(가) {amount}코인 수령"
+            )
 
-        await interaction.followup.send(
-            f"✅ 오늘의 **{amount}** 코인을 받으셨습니다!", ephemeral=True
-        )
-        user_display = f"{user.display_name}님"
-        await log_to_channel(
-            self.bot,
-            f"🎁 [오늘의 코인] {user_display}이(가) {amount}코인 수령"
-        )
-
-        # refresh the leaderboard in place
-        coins_cog = self.bot.get_cog("Coins")
-        if coins_cog:
-            await coins_cog.refresh_leaderboard()
+            # refresh the leaderboard in place
+            coins_cog = self.bot.get_cog("Coins")
+            if coins_cog:
+                await coins_cog.refresh_leaderboard()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            await interaction.followup.send(
+                "❌ 알 수 없는 오류가 발생했습니다.\n```{}```".format(e), ephemeral=True
+            )
 
 
 class Coins(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._setup_done = False
-        # register view so button persists
-        bot.add_view(DailyCoinsView(bot))
 
     @commands.Cog.listener()
     async def on_ready(self):

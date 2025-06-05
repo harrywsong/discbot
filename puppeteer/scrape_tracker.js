@@ -3,14 +3,20 @@ const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 puppeteer.use(StealthPlugin());
 
 const url = process.argv[2];
+const targetRiotID = process.argv[3]; // ← NEW: get Riot ID from CLI
+
 if (!url || !url.startsWith("http")) {
   console.error("❌ Please provide a valid Tracker.gg match URL.");
+  process.exit(1);
+}
+if (!targetRiotID) {
+  console.error("❌ Please provide the target Riot ID (e.g. 뜨르흐즤믈르그#겨울밤).");
   process.exit(1);
 }
 
 (async () => {
   const browser = await puppeteer.launch({
-    headless: true, // set to true in production
+    headless: true,
     defaultViewport: null,
     args: ["--no-sandbox", "--disable-setuid-sandbox"]
   });
@@ -26,10 +32,9 @@ if (!url || !url.startsWith("http")) {
 
     console.error("✅ Page loaded. Waiting for scoreboard...");
     await page.waitForSelector(".st-content__item img[alt]", { timeout: 30000 });
-
     console.error("✅ Scoreboard detected. Parsing match data...");
 
-    const result = await page.evaluate(() => {
+    const result = await page.evaluate((targetRiotID) => {
       const knownMaps = [
         "Ascent", "Bind", "Breeze", "Fracture", "Haven", "Icebox", "Lotus",
         "Pearl", "Split", "Sunset", "Deadlock", "Abyss"
@@ -38,7 +43,6 @@ if (!url || !url.startsWith("http")) {
       const toFloat = val => parseFloat(val.replace(/[+,%]/g, "")) || 0;
       const toInt = val => parseInt(val.replace(/[+,%]/g, ""), 10) || 0;
 
-      // Get match metadata
       const labels = Array.from(document.querySelectorAll(".trn-match-drawer__header-label"))
         .map(el => el.textContent.trim());
       const values = Array.from(document.querySelectorAll(".trn-match-drawer__header-value"))
@@ -46,36 +50,23 @@ if (!url || !url.startsWith("http")) {
 
       const mode = labels[0] || "";
       const mapText = values[0] || "";
+      let map = knownMaps.includes(mapText) ? mapText : "Unknown";
 
-      let map = "Unknown";
-      if (knownMaps.includes(mapText)) {
-        map = mapText;
-      }
-
-      // Process player data
       const rows = Array.from(document.querySelectorAll(".st-content__item"));
-  const players = rows.map((row, index) => {
-    const nameElement = row.querySelector(".trn-ign__username");
-    const tagElement = row.querySelector(".trn-ign__discriminator");
+      const players = rows.map((row, index) => {
+        const nameElement = row.querySelector(".trn-ign__username");
+        const tagElement = row.querySelector(".trn-ign__discriminator");
 
-    // Get raw values without modifying them
-    const rawName = nameElement?.textContent.trim() || "";
-    const rawTag = tagElement?.textContent.trim() || "";
+        const rawName = nameElement?.textContent.trim() || "";
+        const rawTag = tagElement?.textContent.trim() || "";
+        if (!rawName || !rawTag) return null;
 
-    if (!rawName || !rawTag) {
-      console.log(`[LOG] ⚠️ Invalid player: ${rawName}#${rawTag}. Skipping.`);
-      return null;
-    }
+        const cleanName = rawName.endsWith('#') ? rawName.slice(0, -1) : rawName;
+        const cleanTag = rawTag.startsWith('#') ? rawTag.slice(1) : rawTag;
+        const name = `${cleanName}#${cleanTag}`;
 
-    // SAFELY combine name and tag
-    const cleanName = rawName.endsWith('#') ? rawName.slice(0, -1) : rawName;
-    const cleanTag = rawTag.startsWith('#') ? rawTag.slice(1) : rawTag;
-    const name = `${cleanName}#${cleanTag}`;
-
-const agentImg = row.querySelector('.image > img[alt][src*="agents"]');
-const agent = agentImg?.getAttribute("alt")?.trim() || "?";
-
-
+        const agentImg = row.querySelector('.image > img[alt][src*="agents"]');
+        const agent = agentImg?.getAttribute("alt")?.trim() || "?";
 
         const rankImg = row.querySelector(
           'img[alt*="Iron"], img[alt*="Bronze"], img[alt*="Silver"], ' +
@@ -90,7 +81,7 @@ const agent = agentImg?.getAttribute("alt")?.trim() || "?";
         const team = index < 5 ? "Red" : "Blue";
 
         return {
-          name,       // Properly formatted "Name#Tag"
+          name,
           agent,
           team,
           tier,
@@ -108,49 +99,40 @@ const agent = agentImg?.getAttribute("alt")?.trim() || "?";
           fd: toInt(cells[13]),
           mk: toInt(cells[14])
         };
-      }).filter(p => p !== null); // Remove skipped players
+      }).filter(p => p !== null);
 
-      // Calculate match results
-      const scoreEls = document.querySelectorAll(".match-header-vs .value");
-      const team1_score = parseInt(
+      const redScore = parseInt(
         document.querySelector('.trn-match-drawer__header-value.valorant-color-team-1')?.textContent.trim()
       ) || 0;
-
-      const team2_score = parseInt(
+      const blueScore = parseInt(
         document.querySelector('.trn-match-drawer__header-value.valorant-color-team-2')?.textContent.trim()
       ) || 0;
+      const round_count = redScore + blueScore;
 
-      const round_count = team1_score + team2_score;
-
-      // Define the target user
-      const TARGET_RIOT_ID = "뜨르흐즤믈르그#겨울밤"; // ← replace dynamically if needed
-
-      // Determine which team the user was on
-      const player = players.find(p => p.name === TARGET_RIOT_ID);
+      const player = players.find(p => p.name === targetRiotID);
       const user_team = player?.team || "Unknown";
 
-      // Determine if user’s team won
       let won = false;
       if (user_team === "Red") {
-        won = team1_score > team2_score;
+        won = redScore > blueScore;
       } else if (user_team === "Blue") {
-        won = team2_score > team1_score;
+        won = blueScore > redScore;
       }
 
       return {
         map,
         mode,
-        team1_score,
-        team2_score,
+        team1_score: redScore,
+        team2_score: blueScore,
         round_count,
         won,
         players
       };
-    });
+    }, targetRiotID);
 
     console.error("✅ Data parsed successfully.");
     console.error(`✅ ${result.map} match saved. ${result.players.length} players found.`);
-    console.log(JSON.stringify(result, null, 2)); // Pretty-print JSON
+    console.log(JSON.stringify(result, null, 2));
 
   } catch (err) {
     console.error("❌ Scraping failed:", err);

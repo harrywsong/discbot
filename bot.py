@@ -85,10 +85,12 @@ async def main():
 
     # 3) register your other persistent views…
     from cogs.tickets import HelpView
-    from cogs.xp      import DailyXPView
+    from cogs.xp import DailyXPView
+    from cogs.coins import DailyCoinsView
 
     bot.add_view(HelpView(bot))
     bot.add_view(DailyXPView(bot))
+    bot.add_view(DailyCoinsView(bot))
 
     # 4) start the bot
     await bot.start(config.DISCORD_TOKEN)

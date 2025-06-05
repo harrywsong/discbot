@@ -124,6 +124,9 @@ class ValorantMMRCog(commands.Cog):
             print("✅ 슬래시 명령어 동기화 완료 (global)")
             self._synced = True
 
+            print("[MMR] Running leaderboard refresh in on_ready")
+            await self.refresh_mmr_leaderboard()
+
         if not self.periodic_mmr_leaderboard.is_running():
             self.periodic_mmr_leaderboard.start()
 
@@ -187,48 +190,85 @@ class ValorantMMRCog(commands.Cog):
             econ = player.get("economy", {})
             ability = player.get("ability_casts", {})
 
+            # Defensive extraction
             rounds = meta.get("rounds_played", 24)
+            if not isinstance(rounds, (int, float)) or rounds == 0:
+                rounds = 1
+
             kills = stats.get("kills", 0)
             deaths = stats.get("deaths", 1)
             assists = stats.get("assists", 0)
             score = stats.get("score", 0)
             damage = stats.get("damage_made", 0)
+            if not isinstance(damage, (int, float)):
+                damage = 0
             received = stats.get("damage_received", 0)
+            if not isinstance(received, (int, float)):
+                received = 0
             headshots = stats.get("headshots", 0)
             bodyshots = stats.get("bodyshots", 0)
             legshots = stats.get("legshots", 0)
             shots_total = headshots + bodyshots + legshots
+            if not isinstance(shots_total, (int, float)) or shots_total == 0:
+                shots_total = 1
 
             # --- Performance
-            adr = damage / rounds
-            hs_pct = headshots / shots_total * 100 if shots_total else 0
-            kd_ratio = kills / deaths if deaths > 0 else kills
+            try:
+                adr = damage / rounds
+            except Exception:
+                adr = 0
+            try:
+                hs_pct = headshots / shots_total * 100 if shots_total else 0
+            except Exception:
+                hs_pct = 0
+            try:
+                kd_ratio = kills / deaths if deaths > 0 else kills
+            except Exception:
+                kd_ratio = 0
             kda = (kills + 0.7 * assists - 0.5 * deaths)
-            perf.append(kda + (adr * 0.05) + (score / rounds) + (hs_pct * 0.2))
+            try:
+                perf.append(kda + (adr * 0.05) + (score / rounds) + (hs_pct * 0.2))
+            except Exception:
+                perf.append(0)
 
             # --- Encounter
             fk = stats.get("first_kills", 0)
             fd = stats.get("first_deaths", 0)
-            enc_rating = (fk * 2) - fd
+            try:
+                enc_rating = (fk * 2) - fd
+            except Exception:
+                enc_rating = 0
             enc.append(enc_rating)
 
             # --- Utility
-            ability_score = (
-                    ability.get("c", 0) +
-                    ability.get("q", 0) +
-                    ability.get("e", 0) * 1.5 +
-                    ability.get("x", 0) * 2
-            )
-            util.append(ability_score / rounds)
+            try:
+                ability_score = (
+                        ability.get("c", 0) +
+                        ability.get("q", 0) +
+                        ability.get("e", 0) * 1.5 +
+                        ability.get("x", 0) * 2
+                )
+                util.append(ability_score / rounds)
+            except Exception:
+                util.append(0)
 
             # --- Economy
             spent = econ.get("spent", 0)
             remaining = econ.get("remaining", 0)
-            eco_eff = (score / spent) * 100 if spent else 0
-            eco.append(eco_eff + remaining * 0.001)
+            try:
+                eco_eff = (score / spent) * 100 if spent else 0
+            except Exception:
+                eco_eff = 0
+            try:
+                eco.append(eco_eff + (remaining if isinstance(remaining, (int, float)) else 0) * 0.001)
+            except Exception:
+                eco.append(0)
 
             # --- Clutch
-            clutch_score = stats.get("clutch_score", 0) if "clutch_score" in stats else (fk + kills) / rounds
+            try:
+                clutch_score = stats.get("clutch_score", 0) if "clutch_score" in stats else (fk + kills) / rounds
+            except Exception:
+                clutch_score = 0
             clutch.append(clutch_score)
 
         def normalize(arr):
@@ -304,46 +344,131 @@ class ValorantMMRCog(commands.Cog):
                     start_time
                 )
 
-    # ── Update a single player’s MMR in DB, then refresh leaderboard ──
-    async def update_player_mmr(self, conn, puuid: str, riot_name: str, riot_tag: str, region: str):
-        data = await self.henrik_get(f"/valorant/v3/by-puuid/matches/{region}/{puuid}?filter=competitive")
-        matches = data.get("data", []) if data else []
+    async def update_player_mmrs(self, conn, player: asyncpg.Record, region_hint: str = "na"):
+        puuid = player["puuid"]
 
-        hidden = self.calc_hidden(matches[:5], puuid)
+        # 1. Fetch latest competitive matches from Henrik API
+        recent_url = f"https://api.henrikdev.xyz/valorant/v3/by-puuid/matches/{region_hint}/{puuid}?filter=competitive"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                recent_url,
+                headers={"Authorization": os.getenv("HENRIK_API_KEY")}
+            ) as resp:
+                if resp.status != 200:
+                    raise Exception(f"HENRIK API 실패 (status {resp.status})")
+                data = await resp.json()
 
-        weights = {
-            "hidden_perf": 0.4,
-            "hidden_enc": 0.15,
-            "hidden_util": 0.15,
-            "hidden_eco": 0.15,
-            "clutch": 0.15
-        }
+        matches = data.get("data", [])[:5]  # Limit to 5 most recent
 
-        visible = sum(hidden[k] * weights[k] for k in weights)
-
-        await conn.execute(
-            """
-            UPDATE players
-            SET riot_name   = $1,
-                riot_tag    = $2,
-                hidden_perf = $3,
-                hidden_enc  = $4,
-                hidden_util = $5,
-                hidden_eco  = $6,
-                clutch      = $7,
-                visible_mmr = $8,
-                last_active = NOW()
-            WHERE puuid = $9
-            """,
-            riot_name, riot_tag,
-            hidden["hidden_perf"],
-            hidden["hidden_enc"],
-            hidden["hidden_util"],
-            hidden["hidden_eco"],
-            hidden["clutch"],
-            visible,
+        # 2. Fetch recent custom matches from DB
+        rows = await conn.fetch(
+            "SELECT * FROM match_players WHERE puuid = $1 ORDER BY game_start DESC LIMIT 5",
             puuid
         )
+        custom_matches = [dict(r) for r in rows]
+
+        # 3. Combine matches for competitive MMR calculation
+        all_matches = []
+        for m in matches:
+            players = m.get("players", {}).get("all_players", [])
+            player_data = next((p for p in players if p.get("puuid") == puuid), None)
+            if not player_data:
+                continue
+            stats = player_data.get("stats", {})
+            team = player_data.get("team", "").lower()
+            teams = m.get("teams", {})
+            won = teams.get(team, {}).get("has_won", False)
+            all_matches.append({
+                "score": stats.get("score", 0),
+                "kills": stats.get("kills", 0),
+                "deaths": stats.get("deaths", 0),
+                "assists": stats.get("assists", 0),
+                "won": won,
+                "custom": False
+            })
+
+        for m in custom_matches:
+            all_matches.append({
+                "score": m.get("score", 0),
+                "kills": m.get("kills", 0),
+                "deaths": m.get("deaths", 0),
+                "assists": m.get("assists", 0),
+                "won": m.get("won", False),
+                "custom": True
+            })
+
+        # 4. Calculate competitive MMR
+        mmr = player["competitive_mmr"]
+        for match in all_matches:
+            delta = 0
+            if match["won"]:
+                delta += 15
+            else:
+                delta -= 10
+            delta += (match["kills"] - match["deaths"]) * 0.5
+            mmr += round(delta)
+
+        await conn.execute(
+            "UPDATE players SET competitive_mmr = $1 WHERE puuid = $2",
+            int(mmr), puuid
+        )
+
+        # 5. Calculate visible_mmr (advanced, based ONLY on Henrik matches)
+        # Only pass Henrik-format matches to calc_hidden!
+        henrik_matches = []
+        for m in matches:
+            players = m.get("players", {}).get("all_players", [])
+            player_data = next((p for p in players if p.get("puuid") == puuid), None)
+            if player_data:
+                henrik_matches.append(m)
+
+        # Defensive: Only proceed if we have real Henrik matches
+        if henrik_matches:
+            hidden = self.calc_hidden(henrik_matches, puuid)
+            weights = {
+                "hidden_perf": 0.4,
+                "hidden_enc": 0.15,
+                "hidden_util": 0.15,
+                "hidden_eco": 0.15,
+                "clutch": 0.15
+            }
+            # --- 1. Get latest Riot tier info ---
+            riot_score = 1000  # fallback/default
+            latest = henrik_matches[0]
+            players = latest.get("players", {}).get("all_players", [])
+            player_data = next((p for p in players if p.get("puuid") == puuid), None)
+            if player_data:
+                currenttier = player_data.get("currenttier_patched")
+                rr = player_data.get("ranking_in_tier", 0)
+                if currenttier:
+                    riot_score = self.tier_to_score(currenttier, rr)
+            # --- 2. Calculate performance score as before ---
+            perf_score = sum(hidden[k] * weights[k] for k in weights)
+            # --- 3. Blend Riot tier and performance ---
+            visible = int(riot_score * 0.85 + perf_score * 0.15)
+            await conn.execute(
+                "UPDATE players SET visible_mmr = $1 WHERE puuid = $2",
+                int(visible), puuid
+            )
+        else:
+            # Optionally, log or fallback
+            await conn.execute(
+                "UPDATE players SET visible_mmr = $1 WHERE puuid = $2",
+                1000, puuid
+            )
+
+    async def get_leaderboard_message_id(self):
+        async with self.bot.db.acquire() as conn:
+            message_id = await conn.fetchval("SELECT value FROM bot_config WHERE key = 'mmr_leaderboard'")
+            return int(message_id) if message_id else None
+
+    async def set_leaderboard_message_id(self, message_id: int):
+        async with self.bot.db.acquire() as conn:
+            await conn.execute("""
+                               INSERT INTO bot_config (key, value)
+                               VALUES ('mmr_leaderboard', $1) ON CONFLICT (key) DO
+                               UPDATE SET value = EXCLUDED.value
+                               """, str(message_id))
 
     # ── Slash: link account → insert into DB, then live refresh ──
     @app_commands.command(name="연동", description="발로란트 계정을 디스코드랑 연동합니다.")
@@ -552,7 +677,8 @@ class ValorantMMRCog(commands.Cog):
                         value=(
                             f"• **KDA:** `{kills}/{deaths}/{assists}` | **헤드샷률:** `{hs_pct:.1f}%`\n"
                             f"• **ADR:** `{adr}` | **점수:** `{score}` | **티어:** `{tier}`\n"
-                            f"• **라운드:** `{rounds}` | **날짜:** {date}\n"
+                            f"• **라운드:** `{rounds}`\n"
+                            f"• **날짜:** {date}\n"
                             f"[🔗 경기 보기](https://tracker.gg/valorant/match/{match_id})"
                         ),
                         inline=False
@@ -628,21 +754,27 @@ class ValorantMMRCog(commands.Cog):
             embed.timestamp = discord.utils.utcnow()
 
             for rec in records:
+                result = "승리" if rec["won"] else "패배"
+                adr = round(rec["adr"]) if rec["adr"] is not None else 0
+                date_str = rec["game_start"].strftime("%A, %B %d, %Y %I:%M %p")
+
                 embed.add_field(
-                    name=f"🗺 {rec['map']} • {rec['agent']} • {rec['game_start'].strftime('%Y-%m-%d %H:%M')}",
+                    name=f"🗺 {rec['map']} • {rec['agent']} • {result}",
                     value=(
-                        f"• **KDA:** `{rec['kda']}` | **HS%:** `{rec['hs_pct']:.1f}%`\n"
-                        f"• **ADR:** `{rec['adr']}` | **점수:** `{rec['score']}`\n"
+                        f"• **KDA:** {rec['kda']} | **헤드샷률:** {rec['hs_pct']:.1f}%\n"
+                        f"• **ADR:** {adr} | **점수:** {rec['score']} | **티어:** {rec['tier']}\n"
+                        f"• **라운드:** {rec['round_count']}\n"
+                        f"• **날짜:** {date_str}\n"
                         f"[🔗 경기 보기](https://tracker.gg/valorant/match/{rec['match_id']})"
                     ),
-                    inline=False
+                inline=False
                 )
 
             await interaction.followup.send(embed=embed, ephemeral=True)
 
         except Exception as e:
             await interaction.followup.send(f"❌ 오류 발생: {e}", ephemeral=True)
-            await log_to_channel(self.bot, f"❌ [최근내전] 실패: {e}")
+            await log_to_channel(self.bot, f"❌ [최근내전] 실패: {traceback.format_exc()}")
 
     # ── Slash: show single player’s MMR details ──
     @app_commands.command(
@@ -694,7 +826,7 @@ class ValorantMMRCog(commands.Cog):
         region_hint: Optional[str] = "na"
     ):
         await interaction.response.send_message(
-            "⏳ 모든 유저의 MMR을 1분에 1명씩 업데이트합니다...", ephemeral=True
+            "⏳ 모든 유저의 MMR을 10초에 1명씩 업데이트합니다...", ephemeral=True
         )
         await log_to_channel(self.bot, f"📢 [mmr업데이트] 대량 업데이트 시작 by {interaction.user.display_name} ({interaction.user.id})")
         try:
@@ -722,6 +854,8 @@ class ValorantMMRCog(commands.Cog):
             )
             await log_to_channel(self.bot, f"✅ [mmr업데이트] 대량 업데이트 완료! (총 {count}명)")
 
+            await self.refresh_mmr_leaderboard()
+
         except Exception as e:
             await interaction.followup.send(f"❌ 오류: {e}", ephemeral=True)
             await log_to_channel(self.bot, f"❌ [mmr업데이트] 전체 오류: {e}")
@@ -733,33 +867,10 @@ class ValorantMMRCog(commands.Cog):
     )
     @app_commands.check(is_admin)
     async def slash_mmr_leaderboard(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         try:
-            async with self.bot.db.acquire() as conn:
-                rows = await conn.fetch("""
-                    SELECT riot_name, riot_tag, visible_mmr
-                    FROM players
-                    ORDER BY visible_mmr DESC
-                    LIMIT 10
-                """)
-            if not rows:
-                await interaction.followup.send("아직 등록된 유저가 없습니다.", ephemeral=True)
-                return
-
-            embed = discord.Embed(
-                title=":trophy: 발로란트 MMR 리더보드 (TOP 10)",
-                color=discord.Color.gold(),
-                timestamp=datetime.utcnow()
-            )
-            leaderboard = ""
-            for i, row in enumerate(rows, 1):
-                leaderboard += (
-                    f"**{i}.** `{row['riot_name']}#{row['riot_tag']}` – **{row['visible_mmr']}**점\n"
-                )
-            embed.description = leaderboard
-            embed.set_footer(text="최종 MMR(공개+숨김+?) 기준 순위입니다.")
+            embed = await self.build_mmr_leaderboard_embed()
             await interaction.followup.send(embed=embed, ephemeral=False)
-
         except Exception as e:
             await interaction.followup.send(f"❌ 오류: {e}", ephemeral=True)
             await log_to_channel(self.bot, f"❌ MMR 리더보드 오류: {e}")
@@ -768,24 +879,30 @@ class ValorantMMRCog(commands.Cog):
     @app_commands.describe(link="Tracker.gg 매치 링크")
     @app_commands.check(lambda i: i.user.guild_permissions.administrator)
     async def slash_add_custom_game(self, interaction: discord.Interaction, link: str):
-        await interaction.response.defer(ephemeral=True)
-        # Check if user is registered in the players table
+        await interaction.response.defer(ephemeral=False)  # ⬅️ Make response public
+
+        # Get invoking user's Riot ID
         async with self.bot.db.acquire() as conn:
-            row = await conn.fetchrow("SELECT 1 FROM players WHERE discord_id = $1", str(interaction.user.id))
+            row = await conn.fetchrow(
+                "SELECT riot_name, riot_tag FROM players WHERE discord_id = $1",
+                str(interaction.user.id)
+            )
 
         if not row:
             await interaction.followup.send("❌ 먼저 `/연동` 명령어로 계정을 등록해 주세요.", ephemeral=True)
             return
 
+        riot_id = f"{row['riot_name']}#{row['riot_tag']}"
+
         try:
+            # Run Puppeteer scraper with Riot ID as argument
             proc = await asyncio.create_subprocess_exec(
-                "node", "puppeteer/scrape_tracker.js", link,
+                "node", "puppeteer/scrape_tracker.js", link, riot_id,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await proc.communicate()
 
-            # Parse the JSON result
             try:
                 data = json.loads(stdout)
             except Exception as e:
@@ -806,12 +923,10 @@ class ValorantMMRCog(commands.Cog):
                 await interaction.followup.send("❌ 플레이어 데이터를 찾을 수 없습니다.", ephemeral=True)
                 return
 
-            # Get all registered players from DB
-            # In slash_add_custom_game:
+            # Get all linked players
             async with self.bot.db.acquire() as conn:
                 rows = await conn.fetch("SELECT puuid, riot_name, riot_tag FROM players")
 
-            # Create exact match dictionary
             linked_players = {
                 f"{r['riot_name']}#{r['riot_tag']}": r['puuid']
                 for r in rows
@@ -820,12 +935,9 @@ class ValorantMMRCog(commands.Cog):
             valid_players = []
             for player in players:
                 player_name = player["name"].strip()
-
-                # Simple validation
                 if player_name.count('#') != 1:
                     await log_to_channel(self.bot, f"⚠️ Invalid Riot ID format: {player_name}")
                     continue
-
                 if player_name in linked_players:
                     player["puuid"] = linked_players[player_name]
                     valid_players.append(player)
@@ -843,12 +955,9 @@ class ValorantMMRCog(commands.Cog):
             team2_score = data.get("team2_score", 0)
             game_start = datetime.utcnow()
 
-            # Insert valid players into DB
             async with self.bot.db.acquire() as conn:
                 for player in valid_players:
-                    # Split name and tag from the already-formatted Riot ID
                     riot_name, riot_tag = player["name"].split("#", 1)
-
                     await conn.execute("""
                                        INSERT INTO match_players (match_id, puuid, riot_name, riot_tag, map, agent, kda,
                                                                   kills, deaths, assists, score, adr, hs_pct, kast_pct,
@@ -891,12 +1000,14 @@ class ValorantMMRCog(commands.Cog):
 
             await interaction.followup.send(
                 f"✅ {map_name} 맵 내전이 저장되었습니다. 플레이어 수: {len(valid_players)}명\n"
-                f"🔹 {won_team} 팀 승리 ({team1_score}-{team2_score})"
+                f"🔹 {won_team} 팀 승리 ({team1_score}-{team2_score})",
+                ephemeral=False
             )
 
         except Exception as e:
             await interaction.followup.send(f"❌ 오류 발생: {str(e)}", ephemeral=True)
             await log_to_channel(self.bot, f"❌ [내전추가] 실패: {traceback.format_exc()}")
+
 
     # ── Send the embed once and store its message ID ──
     async def initial_post_mmr_leaderboard(self):
@@ -945,38 +1056,23 @@ class ValorantMMRCog(commands.Cog):
 
     # ── Edit the existing leaderboard message or send a new one if not found ──
     async def refresh_mmr_leaderboard(self):
-        global MMR_LEADERBOARD_MESSAGE_ID
         chan = self.bot.get_channel(int(os.getenv("MMR_CHANNEL_ID", "0")))
         if not chan:
+            await log_to_channel(self.bot, f"⚠️ [MMR] Invalid MMR_CHANNEL_ID: {os.getenv('MMR_CHANNEL_ID')}")
             return
 
         embed = await self.build_mmr_leaderboard_embed()
 
-        # If no existing leaderboard message ID, clear the channel first
-        if MMR_LEADERBOARD_MESSAGE_ID is None:
-            try:
-                # Bulk delete all messages in the channel
-                def not_pinned(msg):
-                    return not msg.pinned
-
-                deleted = await chan.purge(limit=100, check=not_pinned)
-                print(f"[MMR] Cleared {len(deleted)} old messages from leaderboard channel.")
-            except Exception as e:
-                await log_to_channel(self.bot, f"⚠️ 리더보드 채널 초기화 실패: {e}")
-
-            sent = await chan.send(embed=embed)
-            MMR_LEADERBOARD_MESSAGE_ID = sent.id
-            print(f"[MMR] Initial leaderboard posted after purge (ID={MMR_LEADERBOARD_MESSAGE_ID})")
-            return
-
         try:
-            msg = await chan.fetch_message(MMR_LEADERBOARD_MESSAGE_ID)
-            await msg.edit(embed=embed)
-            print(f"[MMR] Edited existing leaderboard (ID={MMR_LEADERBOARD_MESSAGE_ID})")
-        except (discord.NotFound, TypeError, discord.HTTPException):
-            sent = await chan.send(embed=embed)
-            MMR_LEADERBOARD_MESSAGE_ID = sent.id
-            print(f"[MMR] Leaderboard not found; sent new. New ID = {MMR_LEADERBOARD_MESSAGE_ID}")
+            # Always clear previous leaderboard messages!
+            await chan.purge(limit=100)
+        except Exception as e:
+            await log_to_channel(self.bot, f"⚠️ [MMR] Channel purge failed: {e}")
+
+        # Now post the new leaderboard and save the ID
+        msg = await chan.send(embed=embed)
+        await self.set_leaderboard_message_id(msg.id)
+        print(f"[MMR] Leaderboard posted and saved in channel {chan.id} (message {msg.id})")
 
     # ── Daily loop: update every player in DB once per day ──
     async def run_daily_update(self):
@@ -1046,7 +1142,7 @@ class ValorantMMRCog(commands.Cog):
             except Exception as e:
                 await log_to_channel(self.bot, f"❌ [SCHEDULER] 일일 MMR 업데이트 실패: {e}")
 
-# ── Cog setup function ──
+#setup
 async def setup(bot: commands.Bot):
     if not hasattr(bot, "db"):
         DATABASE_DSN = os.getenv("DATABASE_URL")
@@ -1055,7 +1151,13 @@ async def setup(bot: commands.Bot):
     async with bot.db.acquire() as conn:
         await conn.execute(CREATE_PLAYERS_SQL)
         await conn.execute(CREATE_ANALYZED_SQL)
-        await conn.execute(MATCH_PLAYERS_SQL)  # The new, single table for all matches
+        await conn.execute(MATCH_PLAYERS_SQL)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_config (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
         await log_to_channel(bot, "✅ <MMR> 데이터베이스 테이블 생성 완료")
 
     cog = ValorantMMRCog(bot)

@@ -2,7 +2,7 @@
 
 import discord
 import re
-import traceback
+import pytz
 from discord.ext import commands
 from discord import app_commands
 from discord.ui import View, Button
@@ -30,16 +30,16 @@ class DailyXPView(View):
 
     @discord.ui.button(label="오늘의 XP 받기", style=discord.ButtonStyle.primary, custom_id="dailyxp_button")
     async def dailyxp_button(self, interaction: discord.Interaction, button: Button):
-        # 1) defer immediately
-        await interaction.response.defer(ephemeral=True)
+        print("Button pressed (coins/xp)")
 
+        await interaction.response.defer(ephemeral=True)
         user = interaction.user
         now_utc = datetime.now(timezone.utc)
 
-        # Eastern Time
-        eastern     = ZoneInfo("America/New_York")
+        # Use pytz for America/New_York
+        eastern = pytz.timezone("America/New_York")
         now_eastern = now_utc.astimezone(eastern)
-        today_et    = now_eastern.date()
+        today_et = now_eastern.date()
 
         # 2) fetch last_claim
         try:
@@ -53,7 +53,7 @@ class DailyXPView(View):
 
         # 3) if claimed already today (ET), deny until next ET midnight
         if row:
-            last_utc     = row["last_claim"]
+            last_utc = row["last_claim"]
             last_et_date = last_utc.astimezone(eastern).date()
             if last_et_date == today_et:
                 # calculate next ET midnight
@@ -63,9 +63,9 @@ class DailyXPView(View):
                     day=today_et.day,
                     tzinfo=eastern
                 ) + timedelta(days=1)
-                delta    = next_midnight_et - now_eastern
+                delta = next_midnight_et - now_eastern
                 hrs, rem = divmod(delta.seconds, 3600)
-                mins      = rem // 60
+                mins = rem // 60
                 return await interaction.followup.send(
                     f"⏳ 이미 오늘의 보상을 받으셨습니다. 다음 보상은 `{hrs}시간 {mins}분` 후 자정(12 AM 동부 시간)에 리셋됩니다.",
                     ephemeral=True
@@ -77,9 +77,9 @@ class DailyXPView(View):
             await self.bot.db.execute(
                 """
                 INSERT INTO daily_claim (user_id, last_claim)
-                VALUES ($1, $2)
-                ON CONFLICT (user_id) DO UPDATE
-                  SET last_claim = EXCLUDED.last_claim
+                VALUES ($1, $2) ON CONFLICT (user_id) DO
+                UPDATE
+                    SET last_claim = EXCLUDED.last_claim
                 """,
                 user.id, now_utc
             )
@@ -133,7 +133,6 @@ async def grant_xp(bot: commands.Bot, user: discord.Member, amount: int):
 class XPSystem(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        bot.add_view(DailyXPView(bot))
         self._xp_setup_done = False
 
     @commands.Cog.listener()
