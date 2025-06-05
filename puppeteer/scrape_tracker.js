@@ -10,7 +10,7 @@ if (!url || !url.startsWith("http")) {
 
 (async () => {
   const browser = await puppeteer.launch({
-    headless: false, // set to true in production
+    headless: true, // set to true in production
     defaultViewport: null,
     args: ["--no-sandbox", "--disable-setuid-sandbox"]
   });
