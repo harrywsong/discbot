@@ -33,20 +33,18 @@ class DailyCoinsView(discord.ui.View):
                 user.id
             )
             if row and row["last_claim"].astimezone(eastern).date() == today_et:
-                next_midnight = datetime(
-                    year=today_et.year,
-                    month=today_et.month,
-                    day=today_et.day,
-                    tzinfo=eastern
-                ) + timedelta(days=1)
-                delta = next_midnight - now_utc.astimezone(eastern)
-                hrs, rem = divmod(delta.seconds, 3600)
+                now_et = now_utc.astimezone(eastern)
+                next_midnight = (now_et + timedelta(days=1)).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
+                delta = next_midnight - now_et
+                hrs, rem = divmod(int(delta.total_seconds()), 3600)
                 mins = rem // 60
                 await interaction.followup.send(
-                    f"⏳ 이미 오늘의 보상을 받으셨습니다. 다음 보상은 `{hrs}시간 {mins}분` 후 자정(12 AM 동부 시간)에 리셋됩니다.",
+                    f"⏳ 이미 오늘의 보상을 받으셨습니다. 다음 보상은 `{hrs}시간 {mins}분` 후 자정(12AM 동부 시간)에 리셋됩니다.",
                     ephemeral=True
                 )
-                return  # Always return after responding
+                return
 
             # grant coins
             amount = config.DAILY_COINS_AMOUNT

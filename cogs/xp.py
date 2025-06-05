@@ -56,18 +56,15 @@ class DailyXPView(View):
             last_utc = row["last_claim"]
             last_et_date = last_utc.astimezone(eastern).date()
             if last_et_date == today_et:
-                # calculate next ET midnight
-                next_midnight_et = datetime(
-                    year=today_et.year,
-                    month=today_et.month,
-                    day=today_et.day,
-                    tzinfo=eastern
-                ) + timedelta(days=1)
+                # Use proper timezone-aware datetime and replace()
+                next_midnight_et = (now_eastern + timedelta(days=1)).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
                 delta = next_midnight_et - now_eastern
-                hrs, rem = divmod(delta.seconds, 3600)
+                hrs, rem = divmod(int(delta.total_seconds()), 3600)
                 mins = rem // 60
                 return await interaction.followup.send(
-                    f"⏳ 이미 오늘의 보상을 받으셨습니다. 다음 보상은 `{hrs}시간 {mins}분` 후 자정(12 AM 동부 시간)에 리셋됩니다.",
+                    f"⏳ 이미 오늘의 보상을 받으셨습니다. 다음 보상은 `{hrs}시간 {mins}분` 후 자정(12AM 동부 시간)에 리셋됩니다.",
                     ephemeral=True
                 )
 
