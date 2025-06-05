@@ -21,11 +21,10 @@ class DailyCoinsView(discord.ui.View):
     async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
         print("Button pressed (coins/xp)")
         try:
-            await interaction.response.defer(ephemeral=True)
+            await interaction.response.defer(ephemeral=True)  # Always defer FIRST
             user = interaction.user
             now_utc = datetime.now(timezone.utc)
-
-            eastern = pytz.timezone("America/New_York")  # ← this line changed!
+            eastern = pytz.timezone("America/New_York")
             today_et = now_utc.astimezone(eastern).date()
 
             # check last claim
@@ -43,10 +42,11 @@ class DailyCoinsView(discord.ui.View):
                 delta = next_midnight - now_utc.astimezone(eastern)
                 hrs, rem = divmod(delta.seconds, 3600)
                 mins = rem // 60
-                return await interaction.followup.send(
+                await interaction.followup.send(
                     f"⏳ 이미 오늘의 보상을 받으셨습니다. 다음 보상은 `{hrs}시간 {mins}분` 후 자정(12 AM 동부 시간)에 리셋됩니다.",
                     ephemeral=True
                 )
+                return  # Always return after responding
 
             # grant coins
             amount = config.DAILY_COINS_AMOUNT
@@ -54,8 +54,7 @@ class DailyCoinsView(discord.ui.View):
                 """
                 INSERT INTO coins (user_id, balance)
                 VALUES ($1, $2) ON CONFLICT (user_id) DO
-                UPDATE
-                    SET balance = coins.balance + EXCLUDED.balance
+                UPDATE SET balance = coins.balance + EXCLUDED.balance
                 """,
                 user.id, amount
             )
@@ -63,8 +62,7 @@ class DailyCoinsView(discord.ui.View):
                 """
                 INSERT INTO daily_coin_claim (user_id, last_claim)
                 VALUES ($1, $2) ON CONFLICT (user_id) DO
-                UPDATE
-                    SET last_claim = EXCLUDED.last_claim
+                UPDATE SET last_claim = EXCLUDED.last_claim
                 """,
                 user.id, now_utc
             )
@@ -72,6 +70,7 @@ class DailyCoinsView(discord.ui.View):
             await interaction.followup.send(
                 f"✅ 오늘의 **{amount}** 코인을 받으셨습니다!", ephemeral=True
             )
+
             user_display = f"{user.display_name}님"
             await log_to_channel(
                 self.bot,
@@ -82,12 +81,17 @@ class DailyCoinsView(discord.ui.View):
             coins_cog = self.bot.get_cog("Coins")
             if coins_cog:
                 await coins_cog.refresh_leaderboard()
+
         except Exception as e:
             import traceback
             traceback.print_exc()
-            await interaction.followup.send(
-                "❌ 알 수 없는 오류가 발생했습니다.\n```{}```".format(e), ephemeral=True
-            )
+            # Only try to followup if not already done
+            try:
+                await interaction.followup.send(
+                    f"❌ 알 수 없는 오류가 발생했습니다.\n```{e}```", ephemeral=True
+                )
+            except Exception:
+                pass  # Already responded or can't send
 
 
 class Coins(commands.Cog):

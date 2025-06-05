@@ -190,7 +190,6 @@ class ValorantMMRCog(commands.Cog):
             econ = player.get("economy", {})
             ability = player.get("ability_casts", {})
 
-            # Defensive extraction
             rounds = meta.get("rounds_played", 24)
             if not isinstance(rounds, (int, float)) or rounds == 0:
                 rounds = 1
@@ -285,6 +284,55 @@ class ValorantMMRCog(commands.Cog):
             "clutch": normalize(clutch)
         }
 
+    def calc_hidden_glicko(
+            self,
+            matches: list,
+            puuid: str,
+            prev_mmr: float = 1000,
+            prev_rd: float = 350,
+            prev_vol: float = 0.06,
+            tau: float = 0.5
+    ) -> dict:
+        import math
+
+        q = math.log(10) / 400
+        mmr = prev_mmr
+        rd = prev_rd
+        vol = prev_vol
+
+        # Collect win/loss outcomes
+        results = []
+        for match in matches:
+            players = match.get("players", {}).get("all_players", [])
+            player = next((p for p in players if p.get("puuid") == puuid), None)
+            if not player:
+                continue
+            team = player.get("team", "").lower()
+            won = match.get("teams", {}).get(team, {}).get("has_won", False)
+            results.append((1000, 1 if won else 0))  # Assume opponent rating is 1000
+
+        if not results:
+            return {"mmr": mmr, "rd": rd, "vol": vol}
+
+        # Glicko-style update
+        for opp_rating, outcome in results:
+            g = 1 / math.sqrt(1 + 3 * q ** 2 * rd ** 2 / math.pi ** 2)
+            E = 1 / (1 + 10 ** (-g * (mmr - opp_rating) / 400))
+            d2 = 1 / (q ** 2 * g ** 2 * E * (1 - E))
+            mmr_delta = q / ((1 / rd ** 2) + (1 / d2)) * g * (outcome - E)
+            mmr += mmr_delta
+            rd = math.sqrt(((1 / rd ** 2) + (1 / d2)) ** -1)
+            if abs(outcome - E) > 0.5:
+                vol = min(0.1, vol + 0.01)
+            else:
+                vol = max(0.05, vol - 0.005)
+
+        return {
+            "mmr": round(mmr, 2),
+            "rd": round(rd, 2),
+            "vol": round(vol, 4)
+        }
+
     async def process_and_store_match(self, match_id: str, region: str = "na"):
         from utils.henrik import henrik_get
 
@@ -351,8 +399,8 @@ class ValorantMMRCog(commands.Cog):
         recent_url = f"https://api.henrikdev.xyz/valorant/v3/by-puuid/matches/{region_hint}/{puuid}?filter=competitive"
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                recent_url,
-                headers={"Authorization": os.getenv("HENRIK_API_KEY")}
+                    recent_url,
+                    headers={"Authorization": os.getenv("HENRIK_API_KEY")}
             ) as resp:
                 if resp.status != 200:
                     raise Exception(f"HENRIK API 실패 (status {resp.status})")
@@ -413,8 +461,7 @@ class ValorantMMRCog(commands.Cog):
             int(mmr), puuid
         )
 
-        # 5. Calculate visible_mmr (advanced, based ONLY on Henrik matches)
-        # Only pass Henrik-format matches to calc_hidden!
+        # 5. Calculate advanced visible and hidden mmrs (with new hidden logic)
         henrik_matches = []
         for m in matches:
             players = m.get("players", {}).get("all_players", [])
@@ -422,9 +469,19 @@ class ValorantMMRCog(commands.Cog):
             if player_data:
                 henrik_matches.append(m)
 
-        # Defensive: Only proceed if we have real Henrik matches
         if henrik_matches:
+            # --- Glicko-based hidden_win stats update ---
+            new_hidden_win = self.calc_hidden_glicko(
+                matches=henrik_matches,
+                puuid=puuid,
+                prev_mmr=float(player.get("hidden_win_mmr", 1000)),
+                prev_rd=float(player.get("hidden_win_rd", 350)),
+                prev_vol=float(player.get("hidden_win_vol", 0.06))
+            )
+
+            # --- Other hidden stats ---
             hidden = self.calc_hidden(henrik_matches, puuid)
+
             weights = {
                 "hidden_perf": 0.4,
                 "hidden_enc": 0.15,
@@ -432,7 +489,6 @@ class ValorantMMRCog(commands.Cog):
                 "hidden_eco": 0.15,
                 "clutch": 0.15
             }
-            # --- 1. Get latest Riot tier info ---
             riot_score = 1000  # fallback/default
             latest = henrik_matches[0]
             players = latest.get("players", {}).get("all_players", [])
@@ -442,16 +498,27 @@ class ValorantMMRCog(commands.Cog):
                 rr = player_data.get("ranking_in_tier", 0)
                 if currenttier:
                     riot_score = self.tier_to_score(currenttier, rr)
-            # --- 2. Calculate performance score as before ---
             perf_score = sum(hidden[k] * weights[k] for k in weights)
-            # --- 3. Blend Riot tier and performance ---
-            visible = int(riot_score * 0.85 + perf_score * 0.15)
+            visible = int(riot_score * 0.7 + perf_score * 0.3)
+
             await conn.execute(
-                "UPDATE players SET visible_mmr = $1 WHERE puuid = $2",
-                int(visible), puuid
+                """
+                UPDATE players
+                SET visible_mmr    = $1,
+                    hidden_win_mmr = $2,
+                    hidden_win_rd  = $3,
+                    hidden_win_vol = $4,
+                    hidden_enc_mmr = $5
+                WHERE puuid = $6
+                """,
+                int(visible),
+                new_hidden_win["mmr"],
+                new_hidden_win["rd"],
+                new_hidden_win["vol"],
+                hidden["hidden_enc"],
+                puuid
             )
         else:
-            # Optionally, log or fallback
             await conn.execute(
                 "UPDATE players SET visible_mmr = $1 WHERE puuid = $2",
                 1000, puuid
@@ -821,37 +888,48 @@ class ValorantMMRCog(commands.Cog):
     )
     @app_commands.check(is_admin)
     async def slash_bulk_update_mmrs(
-        self,
-        interaction: discord.Interaction,
-        region_hint: Optional[str] = "na"
+            self,
+            interaction: discord.Interaction,
+            region_hint: Optional[str] = "na"
     ):
-        await interaction.response.send_message(
-            "⏳ 모든 유저의 MMR을 10초에 1명씩 업데이트합니다...", ephemeral=True
-        )
-        await log_to_channel(self.bot, f"📢 [mmr업데이트] 대량 업데이트 시작 by {interaction.user.display_name} ({interaction.user.id})")
+        await interaction.response.defer(ephemeral=True)
+
+        await log_to_channel(self.bot,
+                             f"📢 [mmr업데이트] 대량 업데이트 시작 by {interaction.user.display_name} ({interaction.user.id})")
+
         try:
             async with self.bot.db.acquire() as conn:
                 players = await conn.fetch("SELECT * FROM players")
             total = len(players)
             count = 0
+
+            # ⬇️ Send the initial progress message
+            # Initial progress message (sent once)
+            progress_msg = await interaction.followup.send(
+                f"🔄 진행상황: 0/{total}명 완료.", ephemeral=True
+            )
+
             for player in players:
                 try:
                     async with self.bot.db.acquire() as conn:
                         await self.update_player_mmrs(conn, player, region_hint)
-                    await log_to_channel(self.bot,
+                    await log_to_channel(
+                        self.bot,
                         f"✅ [mmr업데이트] 성공: {player['riot_name']}#{player['riot_tag']} ({count + 1}/{total})"
                     )
                 except Exception as e:
-                    await log_to_channel(self.bot,
+                    await log_to_channel(
+                        self.bot,
                         f"❌ [mmr업데이트] 실패: {player['riot_name']}#{player['riot_tag']} – {e}"
                     )
+
                 count += 1
-                await interaction.followup.send(f"🔄 진행상황: {count}/{total}명 완료.", ephemeral=True)
+
+                # ✅ Edit the existing progress message
+                await progress_msg.edit(content=f"🔄 진행상황: {count}/{total}명 완료.")
                 await asyncio.sleep(10)
 
-            await interaction.followup.send(
-                f"🎉 모든 MMR 업데이트가 완료되었습니다! (총 {count}명)", ephemeral=True
-            )
+            await progress_msg.edit(content=f"✅ 모든 MMR 업데이트가 완료되었습니다! (총 {count}명)")
             await log_to_channel(self.bot, f"✅ [mmr업데이트] 대량 업데이트 완료! (총 {count}명)")
 
             await self.refresh_mmr_leaderboard()
