@@ -1,27 +1,16 @@
 # cogs/party_finder.py
-import sys
-import logging
 import asyncio
 import json
+import logging
 import discord
 from discord import PartialEmoji, ui, SelectOption
 from discord.ext import commands
 from discord import app_commands
 from utils import config
 
-# ─── Logger Setup ───────────────────────────────────────────
+# configure logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-# Add a StreamHandler to stdout if not already present
-if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setLevel(logging.INFO)
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    )
-    logger.addHandler(handler)
-# ─────────────────────────────────────────────────────────────
 
 # load settings
 PARTY_CHANNEL_ID: int = config.PARTY_CHANNEL_ID           # 텍스트 파티 알림 채널
@@ -48,6 +37,7 @@ TIER_EMOJIS = {
     "불멸":        PartialEmoji(name="immortal_icon",  id=1367050346874011668),
     "레디언트":    PartialEmoji(name="radiant_icon",   id=1367055860479692822),
 }
+
 
 VALORANT_ROLE_ID: int = 1209013681753563156
 
@@ -104,6 +94,7 @@ class PartyView(ui.View):
 
     @ui.button(label='제출', style=discord.ButtonStyle.success, custom_id='party_submit')
     async def submit(self, interaction: discord.Interaction, button: ui.Button):
+        # acknowledge to avoid "This interaction failed"
         await interaction.response.defer()
 
         if not (self.size and self.min_tier and self.max_tier):
@@ -127,6 +118,7 @@ class PartyView(ui.View):
             invite = await vc.create_invite(max_age=86400, max_uses=0, unique=True)
             invite_url = invite.url
 
+            # schedule auto-delete if unused for 10 minutes
             async def delete_if_unused(ch: discord.VoiceChannel):
                 await asyncio.sleep(600)
                 if len(ch.members) == 0:
@@ -154,12 +146,14 @@ class PartyView(ui.View):
         if not channel:
             return await interaction.followup.send("❌ 파티 채널을 찾을 수 없습니다.", ephemeral=True)
 
+        # post public party announcement
         await channel.send(
             content=f"{valorant_ping} {tier_pings}",
             embed=embed,
             view=JoinView(self.size, [interaction.user], vc, invite_url)
         )
 
+        # delete the original ephemeral view
         await interaction.delete_original_response()
 
 class JoinView(ui.View):
@@ -176,6 +170,7 @@ class JoinView(ui.View):
 
     @ui.button(label='파티 참가', style=discord.ButtonStyle.primary, custom_id='party_join')
     async def join(self, interaction: discord.Interaction, button: ui.Button):
+        # existing join logic...
         if interaction.user in self.members:
             return await interaction.response.send_message("⚠️ 이미 파티에 참여 중입니다.", ephemeral=True)
         if len(self.members) >= self.size:
@@ -187,17 +182,10 @@ class JoinView(ui.View):
         remaining = self.size - len(self.members)
         for idx, line in enumerate(lines):
             if line.startswith("**플레이어") or line.startswith("**모든 인원"):
-                lines[idx] = (
-                    f"**플레이어 {remaining}명 더 구합니다**"
-                    if remaining > 0 else "**모든 인원 모집 완료!**"
-                )
+                lines[idx] = (f"**플레이어 {remaining}명 더 구합니다**" if remaining > 0 else "**모든 인원 모집 완료!**")
                 break
         embed.description = '\n'.join(lines)
-        embed.set_field_at(
-            0, name='현재 플레이어',
-            value='\n'.join(f"{i+1}. {m.mention}" for i, m in enumerate(self.members)),
-            inline=False
-        )
+        embed.set_field_at(0, name='현재 플레이어', value='\n'.join(f"{i+1}. {m.mention}" for i, m in enumerate(self.members)), inline=False)
         if remaining == 0:
             for child in self.children:
                 if getattr(child, 'custom_id', None) == 'party_join':
@@ -206,6 +194,7 @@ class JoinView(ui.View):
 
     @ui.button(label='파티 탈퇴', style=discord.ButtonStyle.danger, custom_id='party_leave')
     async def leave(self, interaction: discord.Interaction, button: ui.Button):
+        # existing leave logic...
         if interaction.user not in self.members:
             return await interaction.response.send_message("⚠️ 파티에 참여하고 있지 않습니다.", ephemeral=True)
         self.members.remove(interaction.user)
@@ -215,17 +204,10 @@ class JoinView(ui.View):
         remaining = self.size - len(self.members)
         for idx, line in enumerate(lines):
             if line.startswith("**플레이어") or line.startswith("**모든 인원"):
-                lines[idx] = (
-                    f"**플레이어 {remaining}명 더 구합니다**"
-                    if remaining > 0 else "**모든 인원 모집 완료!**"
-                )
+                lines[idx] = (f"**플레이어 {remaining}명 더 구합니다**" if remaining > 0 else "**모든 인원 모집 완료!**")
                 break
         embed.description = '\n'.join(lines)
-        embed.set_field_at(
-            0, name='현재 플레이어',
-            value='\n'.join(f"{i+1}. {m.mention}" for i, m in enumerate(self.members)),
-            inline=False
-        )
+        embed.set_field_at(0, name='현재 플레이어', value='\n'.join(f"{i+1}. {m.mention}" for i, m in enumerate(self.members)), inline=False)
         if remaining > 0:
             for child in self.children:
                 if getattr(child, 'custom_id', None) == 'party_join':
@@ -239,11 +221,7 @@ class PartyFinder(commands.Cog):
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         ch = before.channel
-        if (
-            ch and isinstance(ch, discord.VoiceChannel) and
-            ch.category_id == PARTY_CATEGORY_ID and
-            ch.name != "🔊┆임시 음성채널 생성"
-        ):
+        if ch and isinstance(ch, discord.VoiceChannel) and ch.category_id == PARTY_CATEGORY_ID and ch.name != "🔊┆임시 음성채널 생성":
             if len(ch.members) == 0:
                 try:
                     await ch.delete()
@@ -254,9 +232,7 @@ class PartyFinder(commands.Cog):
     async def partyfinder(self, interaction: discord.Interaction):
         view = PartyView()
         view._update_defaults()
-        await interaction.response.send_message(
-            "파티 인원 수와 티어 범위를 선택하세요:", view=view, ephemeral=True
-        )
+        await interaction.response.send_message("파티 인원 수와 티어 범위를 선택하세요:", view=view, ephemeral=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(PartyFinder(bot))
