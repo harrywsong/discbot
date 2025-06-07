@@ -38,6 +38,7 @@ TIER_EMOJIS = {
     "레디언트":    PartialEmoji(name="radiant_icon",   id=1367055860479692822),
 }
 
+
 VALORANT_ROLE_ID: int = 1209013681753563156
 
 class PartyView(ui.View):
