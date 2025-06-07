@@ -227,7 +227,7 @@ class PartyFinder(commands.Cog):
                 except Exception as e:
                     logger.warning(f"Failed to delete empty VC {ch.id}: {e}")
 
-    @app_commands.command(name='partyfinder', description='발로란트 파티를 생성합니다 (인원 수 + 티어)')
+    @app_commands.command(name='구인구직', description='발로란트 파티를 생성합니다 (인원 수 + 티어)')
     async def partyfinder(self, interaction: discord.Interaction):
         view = PartyView()
         view._update_defaults()
