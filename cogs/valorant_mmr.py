@@ -1113,17 +1113,26 @@ class ValorantMMRCog(commands.Cog):
                     if not player_data:
                         continue
 
+                    # ── inside your for match loop ──
                     stats = player_data.get("stats", {})
                     kills = stats.get("kills", 0)
                     deaths = stats.get("deaths", 0)
                     assists = stats.get("assists", 0)
+
+                    # restore this so {score} still exists
                     score = stats.get("score", 0)
 
                     headshots = stats.get("headshots", 0)
                     bodyshots = stats.get("bodyshots", 0)
                     legshots = stats.get("legshots", 0)
+
+                    damage = player_data.get("damage_made", 0)
+                    rounds = meta.get("rounds_played", 1) or 1
+
+                    adr = round(damage / rounds)
+                    acs = round(score / rounds)  # use score here
                     total_shots = headshots + bodyshots + legshots
-                    hs_pct = (headshots / total_shots) * 100 if total_shots > 0 else 0
+                    hs_pct = (headshots / total_shots) * 100 if total_shots else 0
 
                     damage = stats.get("damage_made", 0)
                     rounds_played = meta.get("rounds_played", 1) or 1
@@ -1145,7 +1154,7 @@ class ValorantMMRCog(commands.Cog):
                         name=f"🗺 {map_name} • {agent_name} • {mode_name} • {result}",
                         value=(
                             f"• **KDA:** `{kills}/{deaths}/{assists}` | **헤드샷률:** `{hs_pct:.1f}%`\n"
-                            f"• **ADR:** `{adr}` | **점수:** `{score}` | **티어:** `{tier_name}`\n"
+                            f"• **ACS:** `{acs}` | **점수:** `{score}` | **티어:** `{tier_name}`\n"
                             f"• **라운드:** `{rounds_num}`\n"
                             f"• **날짜:** {date_str}\n"
                             f"[🔗 경기 보기](https://tracker.gg/valorant/match/{match_id})"
