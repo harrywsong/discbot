@@ -1834,69 +1834,122 @@ class ValorantMMRCog(commands.Cog):
     async def run_daily_update(self):
         await self.bot.wait_until_ready()
         while not self.bot.is_closed():
+            # 0) Wait until next midnight ET
             now = datetime.now(pytz.timezone("America/Toronto"))
-            tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            tomorrow = (now + timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
             wait_seconds = (tomorrow - now).total_seconds()
-            await log_to_channel(self.bot, f"⏰ 다음 MMR 업데이트까지 {wait_seconds:.1f}초 ({tomorrow.strftime('%Y-%m-%d %H:%M')} 동부 시간) 대기")
+            await log_to_channel(
+                self.bot,
+                f"⏰ 다음 MMR 업데이트까지 {wait_seconds:.1f}초 "
+                f"({tomorrow.strftime('%Y-%m-%d %H:%M')} 동부 시간) 대기"
+            )
             await asyncio.sleep(wait_seconds)
 
             try:
-                timestamp = datetime.now(pytz.timezone("America/Toronto")).strftime("%Y-%m-%d %H:%M")
-                await log_to_channel(self.bot, f"⏬ [SCHEDULER] 일일 MMR 업데이트 실행 중: {timestamp}")
+                # 1) Log start
+                timestamp = datetime.now(pytz.timezone("America/Toronto")).strftime(
+                    "%Y-%m-%d %H:%M"
+                )
+                await log_to_channel(
+                    self.bot,
+                    f"⏬ [SCHEDULER] 일일 MMR 업데이트 실행 중: {timestamp}"
+                )
 
+                # 2) Bulk update every player's MMR
                 async with self.bot.db.acquire() as conn:
                     players = await conn.fetch("SELECT * FROM players")
 
-                total = len(players)
                 count = 0
-
-                # ── 1) 모든 플레이어 MMR 업데이트 ──
                 for player in players:
                     try:
                         async with self.bot.db.acquire() as conn:
                             await self.update_player_mmrs(conn, player, "na")
-                        await log_to_channel(self.bot, f"✅ [SCHEDULER] 업데이트 완료: {player['riot_name']}#{player['riot_tag']}")
+                        await log_to_channel(
+                            self.bot,
+                            f"✅ [SCHEDULER] 업데이트 완료: "
+                            f"{player['riot_name']}#{player['riot_tag']}"
+                        )
                     except Exception as e:
-                        await log_to_channel(self.bot, f"❌ [SCHEDULER] 업데이트 실패: {player['riot_name']}#{player['riot_tag']}: {e}")
+                        await log_to_channel(
+                            self.bot,
+                            f"❌ [SCHEDULER] 업데이트 실패: "
+                            f"{player['riot_name']}#{player['riot_tag']}: {e}"
+                        )
                     count += 1
-                    await asyncio.sleep(10)  # throttle
+                    await asyncio.sleep(10)  # throttle between updates
 
-                await log_to_channel(self.bot, f"✅ [SCHEDULER] 일일 MMR 업데이트 완료. 총: {count}명")
+                await log_to_channel(
+                    self.bot,
+                    f"✅ [SCHEDULER] 일일 MMR 업데이트 완료. 총: {count}명"
+                )
 
-                # ── 2) Riot ID 변경 감지 ──
+                # 3) Refresh the leaderboard embed
+                try:
+                    await self.refresh_mmr_leaderboard()
+                    await log_to_channel(
+                        self.bot,
+                        "🔄 [SCHEDULER] 리더보드 embed 갱신 완료"
+                    )
+                except Exception as e:
+                    await log_to_channel(
+                        self.bot,
+                        f"❌ [SCHEDULER] 리더보드 갱신 실패: {e}"
+                    )
+
+                # 4) Riot ID 변경 감지 (throttled, 429-safe)
                 async with self.bot.db.acquire() as conn:
                     for player in players:
                         old_name = player["riot_name"]
                         old_tag  = player["riot_tag"]
                         puuid    = player["puuid"]
 
-                        # 2.1) name#tag 로 조회해 보기
-                        data = await self.henrik_get(f"/valorant/v2/account/{old_name}/{old_tag}")
-                        if not data or "data" not in data:
-                            # 2.2) 실패했으면 puuid 로 lookup 해서 새로운 name/tag 획득
-                            puuid_lookup = await self.henrik_get(f"/valorant/v2/account/by-puuid/{puuid}")
-                            if puuid_lookup and "data" in puuid_lookup:
-                                new_name = puuid_lookup["data"]["name"]
-                                new_tag  = puuid_lookup["data"]["tag"]
-                                if new_name != old_name or new_tag != old_tag:
-                                    # Riot ID가 바뀐 걸로 판정 → DB에 업데이트
-                                    await conn.execute(
-                                        """
-                                        UPDATE players
-                                        SET riot_name = $1, riot_tag = $2
-                                        WHERE puuid = $3
-                                        """,
-                                        new_name, new_tag, puuid
-                                    )
-                                    await log_to_channel(
-                                        self.bot,
-                                        f"🔄 Riot ID 변경 감지: {old_name}#{old_tag} → {new_name}#{new_tag}"
-                                    )
-                                    # 변경이 생겼으니 새 리더보드 푸시
-                                    await self.refresh_mmr_leaderboard()
+                        # throttle so we stay under rate limits
+                        await asyncio.sleep(4)
+
+                        # 4.1) Try name#tag lookup
+                        data = await self.henrik_get(
+                            f"/valorant/v2/account/{old_name}/{old_tag}"
+                        )
+                        if data is None:
+                            # if we hit a 429 or error, skip the PUUID lookup
+                            continue
+
+                        # throttle again before second call
+                        await asyncio.sleep(4)
+
+                        # 4.2) Confirm via PUUID lookup
+                        puuid_data = await self.henrik_get(
+                            f"/valorant/v2/account/by-puuid/{puuid}"
+                        )
+                        if puuid_data is None or "data" not in puuid_data:
+                            continue
+
+                        new_name = puuid_data["data"]["name"]
+                        new_tag  = puuid_data["data"]["tag"]
+                        if new_name != old_name or new_tag != old_tag:
+                            # update DB and refresh leaderboard on change
+                            await conn.execute(
+                                """
+                                UPDATE players
+                                SET riot_name = $1, riot_tag = $2
+                                WHERE puuid = $3
+                                """,
+                                new_name, new_tag, puuid
+                            )
+                            await log_to_channel(
+                                self.bot,
+                                f"🔄 Riot ID 변경 감지: "
+                                f"{old_name}#{old_tag} → {new_name}#{new_tag}"
+                            )
+                            await self.refresh_mmr_leaderboard()
 
             except Exception as e:
-                await log_to_channel(self.bot, f"❌ [SCHEDULER] 일일 MMR 업데이트 실패: {e}")
+                await log_to_channel(
+                    self.bot,
+                    f"❌ [SCHEDULER] 일일 MMR 업데이트 실패: {e}"
+                )
 
 #setup
 async def setup(bot: commands.Bot):
