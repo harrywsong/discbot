@@ -2,6 +2,7 @@ import os, sys
 import ssl
 import asyncio
 import asyncpg
+import logging
 
 import discord
 from discord.ext import commands
@@ -11,6 +12,11 @@ load_dotenv()
 
 from utils import config
 
+# ─── Logging Setup ─────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("discord_bot")
+
+# ─── Discord Bot Setup ─────────────────────────────────────────
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
@@ -19,7 +25,7 @@ intents.presences = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ─── Create DB pool before bot startup ────────────────────────────────────
+# ─── Create DB pool before bot startup ─────────────────────────
 async def init_db_pool():
     ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ssl_ctx.check_hostname = False
@@ -31,59 +37,49 @@ async def init_db_pool():
         timeout=10,
         statement_cache_size=0
     )
-    print("✅ Database pool created")
+    logger.info("✅ Database pool created")
 
-# ─── Only sync commands once ───────────────────────────────────────────────
+# ─── Sync slash commands on first ready ────────────────────────
 @bot.event
 async def on_ready():
-    print("🟢 on_ready triggered")
+    logger.info("🟢 on_ready triggered")
 
     if not getattr(bot, "synced", False):
         try:
-            # Completely clears old commands from Discord and resyncs from scratch
             await bot.tree.sync()
             bot.synced = True
-            print("✅ Slash commands synced")
+            logger.info("✅ Slash commands synced")
         except Exception as e:
-            print(f"❌ Slash sync failed: {e}")
+            logger.exception("❌ Slash sync failed")
 
-    print(f"✅ Logged in as {bot.user}")
-
-    # Explicitly wrap presence in try/except and log before + after
-    print("🟡 Attempting to set presence...")
+    logger.info(f"✅ Logged in as {bot.user}")
+    logger.info("🟡 Attempting to set presence...")
 
     try:
         await bot.change_presence(
             status=discord.Status.online,
             activity=discord.Streaming(name="ㅎㅇㅎㅇ", url="https://twitch.tv/asdf")
         )
-        print("✅ Presence set to Streaming")
+        logger.info("✅ Presence set to Streaming")
     except Exception as e:
-        print(f"❌ Failed to set presence: {e}")
+        logger.exception("❌ Failed to set presence")
 
-
-
-# ─── Load all cogs from /cogs ─────────────────────────────────────────────
+# ─── Load all cogs from /cogs ──────────────────────────────────
 async def load_extensions():
     for filename in os.listdir("./cogs"):
         if filename.endswith(".py") and filename != "__init__.py":
             try:
-                print(f"🔄 Loading cog: {filename}")
+                logger.info(f"🔄 Loading cog: {filename}")
                 await bot.load_extension(f"cogs.{filename[:-3]}")
-                print(f"✅ Loaded: {filename}")
+                logger.info(f"✅ Loaded: {filename}")
             except Exception as e:
-                print(f"❌ Failed to load {filename}: {e}")
+                logger.exception(f"❌ Failed to load {filename}")
 
-
-# ─── Entry point ─────────────────────────────────────────────────────────
+# ─── Entry point ───────────────────────────────────────────────
 async def main():
-    # 1) init DB pool
     await init_db_pool()
-
-    # 2) load all cogs (this runs setup() in cogs/entry.py)
     await load_extensions()
 
-    # 3) register your other persistent views…
     from cogs.tickets import HelpView
     from cogs.xp import DailyXPView
     from cogs.coins import DailyCoinsView
@@ -92,7 +88,6 @@ async def main():
     bot.add_view(DailyXPView(bot))
     bot.add_view(DailyCoinsView(bot))
 
-    # 4) start the bot
     await bot.start(config.DISCORD_TOKEN)
 
 if __name__ == "__main__":
