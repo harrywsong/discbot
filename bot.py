@@ -47,7 +47,6 @@ async def on_ready():
     if not getattr(bot, "synced", False):
         try:
             # 🔧 TEMP: clear all global commands to prevent duplicates
-            await bot.tree.clear_commands(guild=None)
             await bot.tree.sync()
             bot.synced = True
             print("✅ Slash commands force-cleared and synced")
