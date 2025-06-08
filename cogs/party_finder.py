@@ -217,6 +217,7 @@ class JoinView(ui.View):
 class PartyFinder(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.bot.tree.add_command(self.partyfinder)  # ⬅️ This line makes it work!
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
