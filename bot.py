@@ -42,15 +42,17 @@ async def init_db_pool():
 # ─── Sync slash commands on first ready ────────────────────────
 @bot.event
 async def on_ready():
-    logger.info("🟢 on_ready triggered")
+    print("🟢 on_ready triggered")
 
     if not getattr(bot, "synced", False):
         try:
+            # 🔧 TEMP: clear all global commands to prevent duplicates
+            await bot.tree.clear_commands(guild=None)
             await bot.tree.sync()
             bot.synced = True
-            logger.info("✅ Slash commands synced")
+            print("✅ Slash commands force-cleared and synced")
         except Exception as e:
-            logger.exception("❌ Slash sync failed")
+            print(f"❌ Slash sync failed: {e}")
 
     logger.info(f"✅ Logged in as {bot.user}")
     logger.info("🟡 Attempting to set presence...")
