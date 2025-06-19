@@ -3,25 +3,85 @@
 import discord
 import re
 import pytz
+import asyncio
 from discord.ext import commands
 from discord import app_commands
 from discord.ui import View, Button
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 from utils import config
 from utils.logger import log_to_channel
-from utils.henrik import henrik_get
 
 # ─── XP SETTINGS ────────────────────────────────────
-VOICE_XP_PER_MIN     = 1
-DAILY_BONUS          = 200
-BASE_XP_PER_LEVEL    = 100
-INCREMENT_PER_LEVEL  = 20
+VOICE_XP_PER_MIN = 1
+DAILY_BONUS = 200
+BASE_XP_PER_LEVEL = 100
+INCREMENT_PER_LEVEL = 20
+
+# Database table creation SQL
+CREATE_XP_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS xp (
+    user_id BIGINT PRIMARY KEY,
+    xp INTEGER NOT NULL DEFAULT 0,
+    level INTEGER NOT NULL DEFAULT 0,
+    last_active TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"""
+
+CREATE_DAILY_CLAIM_TABLE_SQL = """
+                               CREATE TABLE IF NOT EXISTS daily_claim \
+                               ( \
+                                   user_id \
+                                   BIGINT \
+                                   PRIMARY \
+                                   KEY, \
+                                   last_claim \
+                                   TIMESTAMPTZ \
+                                   NOT \
+                                   NULL
+                               ); \
+                               """
+
 
 def xp_to_next_level(level: int) -> int:
     return BASE_XP_PER_LEVEL + level * INCREMENT_PER_LEVEL
 
+
 voice_session_starts: dict[int, datetime] = {}
+
+
+class LeaderboardView(View):
+    def __init__(self, cog, page=0, per_page=10):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.page = page
+        self.per_page = per_page
+
+    async def update_embed(self, interaction: discord.Interaction):
+        embed = await self.cog.build_leaderboard_embed(page=self.page, per_page=self.per_page)
+        await interaction.response.edit_message(
+            embed=embed,
+            view=LeaderboardView(self.cog, page=self.page, per_page=self.per_page)
+        )
+
+    # In LeaderboardView class, modify the navigation buttons:
+    @discord.ui.button(label="⏮️", style=discord.ButtonStyle.secondary, custom_id="prev_page")
+    async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page > 0:
+            self.page -= 1
+            await self.update_embed(interaction)
+        else:
+            await interaction.response.defer()
+
+    @discord.ui.button(label="⏭️", style=discord.ButtonStyle.secondary, custom_id="next_page")
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        total_count = await self.cog.bot.db.fetchval("SELECT COUNT(*) FROM xp")
+        max_page = (total_count - 1) // self.per_page
+        if self.page < max_page:
+            self.page += 1
+            await self.update_embed(interaction)
+        else:
+            await interaction.response.defer()
+
 
 class DailyXPView(View):
     def __init__(self, bot: commands.Bot):
@@ -30,18 +90,14 @@ class DailyXPView(View):
 
     @discord.ui.button(label="오늘의 XP 받기", style=discord.ButtonStyle.primary, custom_id="dailyxp_button")
     async def dailyxp_button(self, interaction: discord.Interaction, button: Button):
-        print("Button pressed (coins/xp)")
-
         await interaction.response.defer(ephemeral=True)
         user = interaction.user
         now_utc = datetime.now(timezone.utc)
 
-        # Use pytz for America/New_York
         eastern = pytz.timezone("America/New_York")
         now_eastern = now_utc.astimezone(eastern)
         today_et = now_eastern.date()
 
-        # 2) fetch last_claim
         try:
             row = await self.bot.db.fetchrow(
                 "SELECT last_claim FROM daily_claim WHERE user_id = $1",
@@ -51,12 +107,10 @@ class DailyXPView(View):
             await log_to_channel(self.bot, f"[DailyXP] DB 조회 오류: {e}")
             return await interaction.followup.send("❌ 데이터베이스 오류가 발생했습니다.", ephemeral=True)
 
-        # 3) if claimed already today (ET), deny until next ET midnight
         if row:
             last_utc = row["last_claim"]
             last_et_date = last_utc.astimezone(eastern).date()
             if last_et_date == today_et:
-                # Use proper timezone-aware datetime and replace()
                 next_midnight_et = (now_eastern + timedelta(days=1)).replace(
                     hour=0, minute=0, second=0, microsecond=0
                 )
@@ -68,69 +122,40 @@ class DailyXPView(View):
                     ephemeral=True
                 )
 
-        # 4) grant bonus & record claim
         try:
-            await grant_xp(self.bot, user, DAILY_BONUS)
+            xp_cog = self.bot.get_cog("XPSystem")
+            if xp_cog:
+                await xp_cog.grant_xp(user, DAILY_BONUS, force_leaderboard=False)
+
             await self.bot.db.execute(
                 """
                 INSERT INTO daily_claim (user_id, last_claim)
                 VALUES ($1, $2) ON CONFLICT (user_id) DO
-                UPDATE
-                    SET last_claim = EXCLUDED.last_claim
+                UPDATE SET last_claim = EXCLUDED.last_claim
                 """,
                 user.id, now_utc
             )
+
+            await interaction.followup.send(
+                f"✅ 오늘의 **{DAILY_BONUS} XP** 보너스를 받았습니다!",
+                ephemeral=True
+            )
+            await log_to_channel(self.bot, f"✅ {user.display_name}님이 오늘의 XP 보너스를 받았습니다.")
+
         except Exception as e:
             await log_to_channel(self.bot, f"[DailyXP] 보상 처리 오류: {e}")
-            return await interaction.followup.send("❌ 보상 처리 중 오류가 발생했습니다.", ephemeral=True)
+            await interaction.followup.send("❌ 보상 처리 중 오류가 발생했습니다.", ephemeral=True)
 
-        # 5) confirmation
-        await interaction.followup.send(
-            f"✅ 오늘의 **{DAILY_BONUS} XP** 보너스를 받았습니다!",
-            ephemeral=True
-        )
-        await log_to_channel(self.bot, f"✅ {user.display_name}님이 오늘의 XP 보너스를 받았습니다.")
-
-async def grant_xp(bot: commands.Bot, user: discord.Member, amount: int):
-    try:
-        # double if they hold the XP Booster role
-        if discord.utils.get(user.roles, name="XP Booster"):
-            amount *= 2
-
-        row = await bot.db.fetchrow("SELECT xp, level FROM xp WHERE user_id = $1", user.id)
-        xp, lvl = (row["xp"], row["level"]) if row else (0, 0)
-
-        xp += amount
-        needed = xp_to_next_level(lvl)
-        if xp >= needed:
-            xp -= needed
-            lvl += 1
-            chan = bot.get_channel(config.LEVELUP_CHANNEL_ID)
-            if chan:
-                await chan.send(f"🎉 {user.mention}, 레벨업! 지금 레벨 **{lvl}**입니다!")
-            await log_to_channel(bot, f"🎉 {user.display_name}님 레벨업: {lvl}")
-
-        await bot.db.execute(
-            """
-            INSERT INTO xp (user_id, xp, level)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (user_id) DO UPDATE
-              SET xp    = EXCLUDED.xp,
-                  level = EXCLUDED.level
-            """,
-            user.id, xp, lvl
-        )
-
-        xp_cog = bot.get_cog("XPSystem")
-        if xp_cog:
-            await xp_cog.refresh_leaderboard()
-    except Exception as e:
-        await log_to_channel(bot, f"[grant_xp] 오류: {e}")
 
 class XPSystem(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._xp_setup_done = False
+        self._last_leaderboard_update = None
+        self._leaderboard_cache = None
+        self._update_lock = asyncio.Lock()
+        self._backoff_time = 5
+        self._leaderboard_message = None
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -138,37 +163,38 @@ class XPSystem(commands.Cog):
             return
         self._xp_setup_done = True
 
+        async with self.bot.db.acquire() as conn:
+            await conn.execute(CREATE_XP_TABLE_SQL)
+            await conn.execute(CREATE_DAILY_CLAIM_TABLE_SQL)
+
         xp_ch = self.bot.get_channel(config.XP_CHANNEL_ID)
         if not xp_ch:
             print(f"[XPSystem] Invalid XP_CHANNEL_ID: {config.XP_CHANNEL_ID}")
             await log_to_channel(self.bot, f"[XPSystem] 채널을 찾을 수 없습니다: {config.XP_CHANNEL_ID}")
             return
 
-        # Clear old messages
         try:
-            await xp_ch.purge(limit=None)
+            await xp_ch.purge(limit=10)
             print("[XPSystem] 이전 메시지 정리 완료")
         except Exception as e:
             await log_to_channel(self.bot, f"[XPSystem] 메시지 정리 실패: {e}")
 
-        # Leaderboard: send and save message ID
         try:
             lb_embed = await self.build_leaderboard_embed()
-            lb_msg   = await xp_ch.send(embed=lb_embed)
-            config.LEADERBOARD_MESSAGE_ID = lb_msg.id
-            print(f"[XPSystem] 리더보드 전송 완료 (ID={lb_msg.id})")
+            self._leaderboard_message = await xp_ch.send(embed=lb_embed, view=LeaderboardView(self))
+            config.LEADERBOARD_MESSAGE_ID = self._leaderboard_message.id
+            print(f"[XPSystem] 리더보드 전송 완료 (ID={self._leaderboard_message.id})")
             await log_to_channel(self.bot, "✅ XP 리더보드 게시됨")
         except Exception as e:
             await log_to_channel(self.bot, f"[XPSystem] 리더보드 전송 오류: {e}")
 
-        # Daily XP Button: send and save message ID
         try:
             xp_embed = discord.Embed(
                 title="🎁 오늘의 XP 받기",
                 description="아래 버튼을 눌러 오늘의 보너스 XP를 받으세요!",
                 color=discord.Color.gold()
             )
-            view   = DailyXPView(self.bot)
+            view = DailyXPView(self.bot)
             xp_msg = await xp_ch.send(embed=xp_embed, view=view)
             config.DAILY_XP_MESSAGE_ID = xp_msg.id
             print(f"[XPSystem] Daily XP 버튼 게시 완료 (ID={xp_msg.id})")
@@ -176,52 +202,157 @@ class XPSystem(commands.Cog):
         except Exception as e:
             await log_to_channel(self.bot, f"[XPSystem] Daily XP 버튼 전송 오류: {e}")
 
-    async def build_leaderboard_embed(self) -> discord.Embed:
+    async def build_leaderboard_embed(self, page=0, per_page=10) -> discord.Embed:
+        offset = page * per_page
         try:
+            total_count = await self.bot.db.fetchval("SELECT COUNT(*) FROM xp")
             rows = await self.bot.db.fetch(
-                "SELECT user_id, xp, level FROM xp ORDER BY level DESC, xp DESC LIMIT 10"
+                "SELECT user_id, xp, level FROM xp ORDER BY level DESC, xp DESC LIMIT $1 OFFSET $2",
+                per_page, offset
             )
         except Exception as e:
             await log_to_channel(self.bot, f"[XPSystem] 리더보드 조회 오류: {e}")
             rows = []
 
         embed = discord.Embed(
-            title="🏆 XP 리더보드 (Top 10)",
+            title=f"🏆 XP 리더보드 (Top {offset + 1}-{offset + len(rows)})",
             color=discord.Color.gold()
         )
+
         if not rows:
             embed.description = "아직 아무도 XP를 획득하지 않았습니다."
         else:
             lines = []
-            for idx, r in enumerate(rows, start=1):
+            for idx, r in enumerate(rows, start=offset + 1):
                 uid, xp_val, lvl = r["user_id"], r["xp"], r["level"]
                 needed = xp_to_next_level(lvl)
                 lines.append(f"**{idx}.** <@{uid}> — 레벨 {lvl} ({xp_val}/{needed} XP)")
             embed.description = "\n".join(lines)
-        embed.set_footer(text=f"업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        max_page = max(0, (total_count - 1) // per_page)
+        embed.set_footer(text=f"페이지 {page + 1}/{max_page + 1} | 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         return embed
 
-    async def refresh_leaderboard(self):
-        chan = self.bot.get_channel(config.XP_CHANNEL_ID)
-        if not chan:
+    async def refresh_leaderboard(self, force=False):
+        if self._update_lock.locked():
             return
+
+        async with self._update_lock:
+            try:
+                current_time = datetime.now(timezone.utc)
+                if not force and self._last_leaderboard_update and \
+                        (current_time - self._last_leaderboard_update).total_seconds() < 300:
+                    return
+
+                chan = self.bot.get_channel(config.XP_CHANNEL_ID)
+                if not chan:
+                    return
+
+                embed = await self.build_leaderboard_embed()
+
+                if not force and self._leaderboard_cache and self._leaderboard_cache == embed.description:
+                    return
+
+                self._leaderboard_cache = embed.description
+
+                if self._leaderboard_message:
+                    try:
+                        await self._leaderboard_message.edit(embed=embed, view=LeaderboardView(self))
+                        self._last_leaderboard_update = current_time
+                        return
+                    except discord.NotFound:
+                        self._leaderboard_message = None
+                    except discord.HTTPException as e:
+                        if e.status == 429 or e.code == 30046:
+                            try:
+                                # Clear last 10 messages
+                                await chan.purge(limit=10)
+                                await log_to_channel(self.bot, "♻️ Rate limit hit - cleared old messages")
+
+                                # Create fresh leaderboard
+                                self._leaderboard_message = await chan.send(
+                                    embed=embed,
+                                    view=LeaderboardView(self)
+                                )
+                                config.LEADERBOARD_MESSAGE_ID = self._leaderboard_message.id
+                                self._last_leaderboard_update = datetime.now(timezone.utc)
+                                return
+                            except Exception as purge_error:
+                                await log_to_channel(self.bot, f"⚠️ Failed to purge messages: {purge_error}")
+                                raise e
+
+                            await asyncio.sleep(self._backoff_time)
+                            self._backoff_time = min(60, self._backoff_time * 2)
+                            self._leaderboard_message = await chan.send(
+                                embed=embed,
+                                view=LeaderboardView(self)
+                            )
+                            config.LEADERBOARD_MESSAGE_ID = self._leaderboard_message.id
+                            self._last_leaderboard_update = current_time
+                            return
+
+                # Create new message if needed
+                self._leaderboard_message = await chan.send(
+                    embed=embed,
+                    view=LeaderboardView(self)
+                )
+                config.LEADERBOARD_MESSAGE_ID = self._leaderboard_message.id
+                self._last_leaderboard_update = current_time
+                self._backoff_time = 5
+
+            except Exception as e:
+                await log_to_channel(self.bot, f"[XPSystem] 리더보드 업데이트 오류: {e}")
+                await asyncio.sleep(self._backoff_time)
+                self._backoff_time = min(60, self._backoff_time * 2)
+
+    async def grant_xp(self, user: discord.Member, amount: int, force_leaderboard=True):
         try:
-            embed = await self.build_leaderboard_embed()
-            msg = await chan.fetch_message(config.LEADERBOARD_MESSAGE_ID)
-            await msg.edit(embed=embed)
-            print(f"[XPSystem] 리더보드 업데이트 완료 (ID={config.LEADERBOARD_MESSAGE_ID})")
-        except discord.NotFound:
-            sent = await chan.send(embed=embed)
-            config.LEADERBOARD_MESSAGE_ID = sent.id
-            print(f"[XPSystem] 리더보드 메시지를 찾을 수 없어 새로 보냄 (ID={sent.id})")
+            if discord.utils.get(user.roles, name="XP Booster"):
+                amount *= 2
+
+            async with self.bot.db.acquire() as conn:
+                async with conn.transaction():  # Add transaction
+                    row = await conn.fetchrow(
+                        "SELECT xp, level FROM xp WHERE user_id = $1 FOR UPDATE",
+                        user.id
+                    )
+                xp, lvl = (row["xp"], row["level"]) if row else (0, 0)
+
+                xp += amount
+                needed = xp_to_next_level(lvl)
+                level_up = False
+
+                if xp >= needed:
+                    xp -= needed
+                    lvl += 1
+                    level_up = True
+                    chan = self.bot.get_channel(config.LEVELUP_CHANNEL_ID)
+                    if chan:
+                        await chan.send(f"🎉 {user.mention}, 레벨업! 지금 레벨 **{lvl}**입니다!")
+                    await log_to_channel(self.bot, f"🎉 {user.display_name}님 레벨업: {lvl}")
+
+                await conn.execute(
+                    """
+                    INSERT INTO xp (user_id, xp, level, last_active)
+                    VALUES ($1, $2, $3, NOW()) ON CONFLICT (user_id) DO
+                    UPDATE
+                        SET xp = EXCLUDED.xp,
+                        level = EXCLUDED.level,
+                        last_active = EXCLUDED.last_active
+                    """,
+                    user.id, xp, lvl
+                )
+
+                if force_leaderboard or level_up or amount >= 50:
+                    await self.refresh_leaderboard()
+
         except Exception as e:
-            await log_to_channel(self.bot, f"[XPSystem] 리더보드 업데이트 오류: {e}")
+            await log_to_channel(self.bot, f"[grant_xp] 오류: {e}")
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before, after):
         now = datetime.now(timezone.utc)
 
-        # 음성 채널에서 나갈 때
         if before.channel and (not after.channel or after.channel.id != before.channel.id):
             start = voice_session_starts.pop(member.id, None)
             if start:
@@ -232,9 +363,8 @@ class XPSystem(commands.Cog):
                         self.bot,
                         f"🗣️ {member.display_name}님이 음성 {minutes}분 → {earned} XP 획득"
                     )
-                    await grant_xp(self.bot, member, earned)
+                    await self.grant_xp(member, earned, force_leaderboard=False)
 
-        # 음성 채널에 입장할 때
         if after.channel and (not before.channel or before.channel.id != after.channel.id):
             voice_session_starts[member.id] = now
 

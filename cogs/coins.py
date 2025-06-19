@@ -1,33 +1,95 @@
-# cogs/coins.py new
+# cogs/coins.py
 
 import discord
+import asyncio
+import pytz
 from discord.ext import commands
 from discord import app_commands
+from discord.ui import View, Button
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
-import asyncio
-
 from utils import config
 from utils.logger import log_to_channel
-import pytz
+
+# Database table creation SQL
+CREATE_COINS_TABLE_SQL = """
+                         CREATE TABLE IF NOT EXISTS coins \
+                         ( \
+                             user_id \
+                             BIGINT \
+                             PRIMARY \
+                             KEY, \
+                             balance \
+                             BIGINT \
+                             NOT \
+                             NULL \
+                             DEFAULT \
+                             0
+                         ); \
+                         """
+
+CREATE_DAILY_CLAIM_TABLE_SQL = """
+                               CREATE TABLE IF NOT EXISTS daily_coin_claim \
+                               ( \
+                                   user_id \
+                                   BIGINT \
+                                   PRIMARY \
+                                   KEY, \
+                                   last_claim \
+                                   TIMESTAMPTZ \
+                                   NOT \
+                                   NULL
+                               ); \
+                               """
 
 
-class DailyCoinsView(discord.ui.View):
+class LeaderboardView(View):
+    def __init__(self, cog, page=0, per_page=10):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.page = page
+        self.per_page = per_page
+
+    async def update_embed(self, interaction: discord.Interaction):
+        embed = await self.cog.build_leaderboard_embed(page=self.page, per_page=self.per_page)
+        await interaction.response.edit_message(
+            embed=embed,
+            view=LeaderboardView(self.cog, page=self.page, per_page=self.per_page)
+        )
+
+    @discord.ui.button(label="⏮️", style=discord.ButtonStyle.secondary, custom_id="prev_page")
+    async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page > 0:
+            self.page -= 1
+            await self.update_embed(interaction)
+        else:
+            await interaction.response.defer()
+
+    @discord.ui.button(label="⏭️", style=discord.ButtonStyle.secondary, custom_id="next_page")
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        total_count = await self.cog.bot.db.fetchval("SELECT COUNT(*) FROM coins")
+        max_page = (total_count - 1) // self.per_page
+        if self.page < max_page:
+            self.page += 1
+            await self.update_embed(interaction)
+        else:
+            await interaction.response.defer()
+
+
+class DailyCoinsView(View):
     def __init__(self, bot: commands.Bot):
         super().__init__(timeout=None)
         self.bot = bot
 
     @discord.ui.button(label="오늘의 코인 받기", style=discord.ButtonStyle.primary, custom_id="dailycoins_button")
     async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
-        print("Button pressed (coins/xp)")
-        try:
-            await interaction.response.defer(ephemeral=True)  # Always defer FIRST
-            user = interaction.user
-            now_utc = datetime.now(timezone.utc)
-            eastern = pytz.timezone("America/New_York")
-            today_et = now_utc.astimezone(eastern).date()
+        await interaction.response.defer(ephemeral=True)
+        user = interaction.user
+        now_utc = datetime.now(timezone.utc)
+        eastern = pytz.timezone("America/New_York")
+        today_et = now_utc.astimezone(eastern).date()
 
-            # check last claim
+        try:
+            # Check last claim
             row = await self.bot.db.fetchrow(
                 "SELECT last_claim FROM daily_coin_claim WHERE user_id = $1",
                 user.id
@@ -46,146 +108,193 @@ class DailyCoinsView(discord.ui.View):
                 )
                 return
 
-            # grant coins
-            amount = config.DAILY_COINS_AMOUNT
-            await self.bot.db.execute(
-                """
-                INSERT INTO coins (user_id, balance)
-                VALUES ($1, $2) ON CONFLICT (user_id) DO
-                UPDATE SET balance = coins.balance + EXCLUDED.balance
-                """,
-                user.id, amount
-            )
-            await self.bot.db.execute(
-                """
-                INSERT INTO daily_coin_claim (user_id, last_claim)
-                VALUES ($1, $2) ON CONFLICT (user_id) DO
-                UPDATE SET last_claim = EXCLUDED.last_claim
-                """,
-                user.id, now_utc
-            )
+            # Grant coins in transaction
+            async with self.bot.db.acquire() as conn:
+                async with conn.transaction():
+                    amount = config.DAILY_COINS_AMOUNT
+                    await conn.execute(
+                        """
+                        INSERT INTO coins (user_id, balance)
+                        VALUES ($1, $2) ON CONFLICT (user_id) DO
+                        UPDATE SET balance = coins.balance + EXCLUDED.balance
+                        """,
+                        user.id, amount
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO daily_coin_claim (user_id, last_claim)
+                        VALUES ($1, $2) ON CONFLICT (user_id) DO
+                        UPDATE SET last_claim = EXCLUDED.last_claim
+                        """,
+                        user.id, now_utc
+                    )
 
             await interaction.followup.send(
                 f"✅ 오늘의 **{amount}** 코인을 받으셨습니다!", ephemeral=True
             )
-
-            user_display = f"{user.display_name}님"
             await log_to_channel(
                 self.bot,
-                f"🎁 [오늘의 코인] {user_display}이(가) {amount}코인 수령"
+                f"🎁 [오늘의 코인] {user.display_name}님이 {amount}코인 수령"
             )
 
-            # refresh the leaderboard in place
+            # Refresh leaderboard
             coins_cog = self.bot.get_cog("Coins")
             if coins_cog:
                 await coins_cog.refresh_leaderboard()
 
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            # Only try to followup if not already done
-            try:
-                await interaction.followup.send(
-                    f"❌ 알 수 없는 오류가 발생했습니다.\n```{e}```", ephemeral=True
-                )
-            except Exception:
-                pass  # Already responded or can't send
+            await interaction.followup.send(
+                f"❌ 오류 발생: {str(e)}", ephemeral=True
+            )
+            await log_to_channel(self.bot, f"❌ [코인 지급 오류] {e}")
 
 
 class Coins(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._setup_done = False
+        self._last_leaderboard_update = None
+        self._leaderboard_cache = None
+        self._update_lock = asyncio.Lock()
+        self._backoff_time = 5
+        self._leaderboard_message = None
 
     @commands.Cog.listener()
     async def on_ready(self):
         if self._setup_done:
             return
 
-        # ─── Wait for the DB pool to be created ─────────────
         while not hasattr(self.bot, "db") or self.bot.db is None:
             await asyncio.sleep(0.1)
 
         self._setup_done = True
 
-        # ─── Ensure tables exist ────────────────────────────
-        await self.bot.db.execute("""
-            CREATE TABLE IF NOT EXISTS coins (
-                user_id BIGINT PRIMARY KEY,
-                balance BIGINT NOT NULL DEFAULT 0
-            );
-        """)
-        await self.bot.db.execute("""
-            CREATE TABLE IF NOT EXISTS daily_coin_claim (
-                user_id BIGINT PRIMARY KEY,
-                last_claim TIMESTAMPTZ NOT NULL
-            );
-        """)
+        async with self.bot.db.acquire() as conn:
+            await conn.execute(CREATE_COINS_TABLE_SQL)
+            await conn.execute(CREATE_DAILY_CLAIM_TABLE_SQL)
 
-        # ─── Unified Coins Channel ──────────────────────────
         coin_ch = self.bot.get_channel(config.DAILY_COINS_CHANNEL_ID)
         if not coin_ch:
             return
 
-        # purge old messages
-        await coin_ch.purge(limit=None)
+        try:
+            await coin_ch.purge(limit=10)
+        except Exception as e:
+            await log_to_channel(self.bot, f"⚠️ 메시지 정리 실패: {e}")
 
-        # send leaderboard embed
-        lb_embed = await self.build_leaderboard_embed()
-        lb_msg = await coin_ch.send(embed=lb_embed)
-        config.COIN_LEADERBOARD_MESSAGE_ID = lb_msg.id
+        try:
+            lb_embed = await self.build_leaderboard_embed()
+            self._leaderboard_message = await coin_ch.send(
+                embed=lb_embed,
+                view=LeaderboardView(self)
+            )
+            config.COIN_LEADERBOARD_MESSAGE_ID = self._leaderboard_message.id
+        except Exception as e:
+            await log_to_channel(self.bot, f"❌ 리더보드 생성 실패: {e}")
 
-        # send daily‑claim button
-        btn_embed = discord.Embed(
-            title="🎁 오늘의 코인 받기",
-            description="아래 버튼을 눌러 오늘의 코인을 받으세요!",
-            color=discord.Color.gold()
-        )
-        view = DailyCoinsView(self.bot)
-        btn_msg = await coin_ch.send(embed=btn_embed, view=view)
-        config.DAILY_COINS_MESSAGE_ID = btn_msg.id
+        try:
+            btn_embed = discord.Embed(
+                title="🎁 오늘의 코인 받기",
+                description="아래 버튼을 눌러 오늘의 코인을 받으세요!",
+                color=discord.Color.gold()
+            )
+            view = DailyCoinsView(self.bot)
+            await coin_ch.send(embed=btn_embed, view=view)
+        except Exception as e:
+            await log_to_channel(self.bot, f"❌ 코인 버튼 생성 실패: {e}")
 
-    async def build_leaderboard_embed(self) -> discord.Embed:
-        rows = await self.bot.db.fetch(
-            "SELECT user_id, balance FROM coins ORDER BY balance DESC LIMIT 10"
-        )
+    async def build_leaderboard_embed(self, page=0, per_page=10) -> discord.Embed:
+        offset = page * per_page
+        try:
+            total_count = await self.bot.db.fetchval("SELECT COUNT(*) FROM coins")
+            rows = await self.bot.db.fetch(
+                "SELECT user_id, balance FROM coins ORDER BY balance DESC LIMIT $1 OFFSET $2",
+                per_page, offset
+            )
+        except Exception as e:
+            await log_to_channel(self.bot, f"❌ 리더보드 조회 오류: {e}")
+            rows = []
+
         embed = discord.Embed(
-            title="🏆 코인 리더보드 (Top 10)",
+            title=f"🏆 코인 리더보드 (Top {offset + 1}-{offset + len(rows)})",
             color=discord.Color.gold()
         )
+
         if not rows:
             embed.description = "아직 코인을 획득한 유저가 없습니다."
         else:
             lines = [
                 f"**{idx}.** <@{r['user_id']}> — {r['balance']} 코인"
-                for idx, r in enumerate(rows, start=1)
+                for idx, r in enumerate(rows, start=offset + 1)
             ]
             embed.description = "\n".join(lines)
-        embed.set_footer(text=f"업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        max_page = max(0, (total_count - 1) // per_page)
+        embed.set_footer(text=f"페이지 {page + 1}/{max_page + 1} | 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         return embed
 
-    async def refresh_leaderboard(self):
-        coin_ch = self.bot.get_channel(config.DAILY_COINS_CHANNEL_ID)
-        if not coin_ch:
+    async def refresh_leaderboard(self, force=False):
+        if self._update_lock.locked():
             return
 
-        embed = await self.build_leaderboard_embed()
-        msg_id = config.COIN_LEADERBOARD_MESSAGE_ID
-
-        # If we have an ID, try to fetch & edit it
-        if msg_id:
+        async with self._update_lock:
             try:
-                msg = await coin_ch.fetch_message(msg_id)
-                await msg.edit(embed=embed)
-                return
-            except (discord.NotFound, discord.HTTPException):
-                # either the message was deleted, or the ID was bad → fall through to send a new one
-                pass
+                current_time = datetime.now(timezone.utc)
+                if not force and self._last_leaderboard_update and \
+                        (current_time - self._last_leaderboard_update).total_seconds() < 300:
+                    return
 
-        # No valid ID or fetch/edit failed: send a fresh message
-        sent = await coin_ch.send(embed=embed)
-        # store its ID for next time
-        config.COIN_LEADERBOARD_MESSAGE_ID = sent.id
+                coin_ch = self.bot.get_channel(config.DAILY_COINS_CHANNEL_ID)
+                if not coin_ch:
+                    return
+
+                embed = await self.build_leaderboard_embed()
+
+                if not force and self._leaderboard_cache and self._leaderboard_cache == embed.description:
+                    return
+
+                self._leaderboard_cache = embed.description
+
+                if self._leaderboard_message:
+                    try:
+                        await self._leaderboard_message.edit(
+                            embed=embed,
+                            view=LeaderboardView(self)
+                        )
+                        self._last_leaderboard_update = current_time
+                        return
+                    except discord.NotFound:
+                        self._leaderboard_message = None
+                    except discord.HTTPException as e:
+                        if e.status == 429 or e.code == 30046:
+                            try:
+                                await coin_ch.purge(limit=10)
+                                await log_to_channel(self.bot, "♻️ Rate limit hit - cleared old messages")
+                            except Exception as purge_error:
+                                await log_to_channel(self.bot, f"⚠️ Failed to purge: {purge_error}")
+
+                            await asyncio.sleep(self._backoff_time)
+                            self._backoff_time = min(60, self._backoff_time * 2)
+                            self._leaderboard_message = await coin_ch.send(
+                                embed=embed,
+                                view=LeaderboardView(self)
+                            )
+                            config.COIN_LEADERBOARD_MESSAGE_ID = self._leaderboard_message.id
+                            self._last_leaderboard_update = current_time
+                            return
+
+                self._leaderboard_message = await coin_ch.send(
+                    embed=embed,
+                    view=LeaderboardView(self)
+                )
+                config.COIN_LEADERBOARD_MESSAGE_ID = self._leaderboard_message.id
+                self._last_leaderboard_update = current_time
+                self._backoff_time = 5
+
+            except Exception as e:
+                await log_to_channel(self.bot, f"❌ 리더보드 업데이트 오류: {e}")
+                await asyncio.sleep(self._backoff_time)
+                self._backoff_time = min(60, self._backoff_time * 2)
 
     @app_commands.command(
         name="coins",
