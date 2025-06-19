@@ -67,7 +67,10 @@ async def on_ready():
 
 # ─── Load all cogs from /cogs ──────────────────────────────────
 async def load_extensions():
-    for filename in os.listdir("./cogs"):
+    base_dir = os.path.dirname(os.path.abspath(__file__))  # directory where bot.py is
+    cogs_dir = os.path.join(base_dir, "cogs")
+
+    for filename in os.listdir(cogs_dir):
         if filename.endswith(".py") and filename != "__init__.py":
             try:
                 logger.info(f"🔄 Loading cog: {filename}")
@@ -75,6 +78,7 @@ async def load_extensions():
                 logger.info(f"✅ Loaded: {filename}")
             except Exception as e:
                 logger.exception(f"❌ Failed to load {filename}")
+
 
 # ─── Entry point ───────────────────────────────────────────────
 async def main():
