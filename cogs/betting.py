@@ -48,7 +48,7 @@ class BettingCog(commands.Cog):
         self.bot = bot
         self.prediction = None  # will hold teams, bets, view, message_id
 
-    @app_commands.command(name="create_bet", description="관리자 전용: 팀 배팅 인터페이스 생성")
+    @app_commands.command(name="bet_create", description="관리자 전용: 팀 배팅 인터페이스 생성")
     @app_commands.describe(team1="팀 1 이름", team2="팀 2 이름")
     @app_commands.checks.has_permissions(administrator=True)
     async def create_bet(self, inter: Interaction, team1: str, team2: str):
@@ -83,7 +83,7 @@ class BettingCog(commands.Cog):
                 await inter.response.send_message(f"❌ 오류 발생: {e}", ephemeral=True)
             await log_to_channel(self.bot, f"❌ [배팅] {user_display}님 인터페이스 생성 중 오류: {e}")
 
-    @app_commands.command(name="lock_bet", description="관리자 전용: 베팅 잠금 (추가 베팅 불가)")
+    @app_commands.command(name="bet_lock", description="관리자 전용: 베팅 잠금 (추가 베팅 불가)")
     @app_commands.checks.has_permissions(administrator=True)
     async def lock_bet(self, inter: Interaction):
         user_display = f"{inter.user.display_name} 님"
@@ -100,7 +100,7 @@ class BettingCog(commands.Cog):
         await inter.response.send_message("🔒 베팅이 잠금 처리되었습니다.", ephemeral=True)
         await log_to_channel(self.bot, f"🔒 [배팅] {user_display}님 베팅 잠금")
 
-    @app_commands.command(name="cancel_bet", description="관리자 전용: 배팅 취소 및 환불")
+    @app_commands.command(name="bet_cancel", description="관리자 전용: 배팅 취소 및 환불")
     @app_commands.checks.has_permissions(administrator=True)
     async def cancel_bet(self, inter: Interaction):
         user_display = f"{inter.user.display_name} 님"
@@ -138,7 +138,7 @@ class BettingCog(commands.Cog):
         await inter.response.send_message("✅ 배팅이 취소되고 환불되었습니다.", ephemeral=True)
         await log_to_channel(self.bot, f"✅ [배팅] {user_display}님 배팅 취소 및 환불 완료")
 
-    @app_commands.command(name="close_bet", description="관리자 전용: 배팅 종료 및 우승팀 정산")
+    @app_commands.command(name="bet_close", description="관리자 전용: 배팅 종료 및 우승팀 정산")
     @app_commands.describe(winner="우승팀 (team1 또는 team2)")
     @app_commands.checks.has_permissions(administrator=True)
     async def close_bet(self, inter: Interaction, winner: Literal["team1", "team2"]):

@@ -207,6 +207,7 @@ class CustomGame(commands.Cog):
         time="시작 시간 (예: 22:00 또는 10:00 PM)",
         zone="시간대: est, cst, pst"
     )
+    @app_commands.check(lambda i: i.user.guild_permissions.administrator)
     async def slash_start_custom(
         self,
         interaction: discord.Interaction,
@@ -534,6 +535,7 @@ class CustomGame(commands.Cog):
         await interaction.response.send_message(f"🗺️ 오늘의 맵: **{choice}**!")
 
     @app_commands.command(name="내전대기", description="현재 내전의 대기열을 엽니다.")
+    @app_commands.check(lambda i: i.user.guild_permissions.administrator)
     async def slash_open_waitlist(self, interaction: discord.Interaction):
         if not getattr(self.bot, "current_custom_game", None):
             return await interaction.response.send_message("❌ 활성 내전이 없습니다.", ephemeral=True)
