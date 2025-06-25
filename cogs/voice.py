@@ -70,7 +70,7 @@ class VoiceManager(commands.Cog):
             if isinstance(channel, discord.VoiceChannel) and len(channel.members) == 0:
                 if now >= created_at + timedelta(minutes=60):
                     try:
-                        channel_name = channel.name  # Save before deletion
+                        channel_name = channel.name  # Save name before deletion
                         await channel.delete()
                         await log_to_channel(self.bot, f"🗑️ 비어있는 채널 `{channel_name}` 삭제됨")
                     except Exception as e:
@@ -89,7 +89,7 @@ class VoiceManager(commands.Cog):
             channel = self.bot.get_channel(before.channel.id)
             if channel and len(channel.members) == 0:
                 try:
-                    channel_name = channel.name  # Save before deletion
+                    channel_name = channel.name  # Save name before deletion
                     await channel.delete()
                     await log_to_channel(self.bot, f"🗑️ `{channel_name}` 자동 삭제됨")
                     created_channels.pop(channel.id, None)
