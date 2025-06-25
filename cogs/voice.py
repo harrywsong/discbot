@@ -85,13 +85,16 @@ class VoiceManager(commands.Cog):
 
         # ── auto‑delete empty temp channels ──
         if before.channel and before.channel.id in created_channels:
-            if len(before.channel.members) == 0:
+            channel = self.bot.get_channel(before.channel.id)
+            if channel and len(channel.members) == 0:
                 try:
-                    await before.channel.delete()
-                    await log_to_channel(self.bot, f"🗑️ `{before.channel.name}` 자동 삭제됨")
-                    created_channels.pop(before.channel.id, None)
+                    await channel.delete()
+                    await log_to_channel(self.bot, f"🗑️ `{channel.name}` 자동 삭제됨")
+                    created_channels.pop(channel.id, None)
                 except Exception as e:
                     await log_to_channel(self.bot, f"❌ 채널 삭제 오류: {e}")
+            elif not channel:
+                created_channels.pop(before.channel.id, None)
 
         # ── create new temp channel on join trigger ──
         if after.channel and after.channel.name == "🔊┆임시 음성채널 생성":
