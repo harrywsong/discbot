@@ -70,8 +70,9 @@ class VoiceManager(commands.Cog):
             if isinstance(channel, discord.VoiceChannel) and len(channel.members) == 0:
                 if now >= created_at + timedelta(minutes=60):
                     try:
+                        channel_name = channel.name  # Save before deletion
                         await channel.delete()
-                        await log_to_channel(self.bot, f"🗑️ 비어있는 채널 `{channel.name}` 삭제됨")
+                        await log_to_channel(self.bot, f"🗑️ 비어있는 채널 `{channel_name}` 삭제됨")
                     except Exception as e:
                         await log_to_channel(self.bot, f"❌ 삭제 실패: `{channel.name}` - {e}")
                     to_remove.append(chan_id)
@@ -88,13 +89,12 @@ class VoiceManager(commands.Cog):
             channel = self.bot.get_channel(before.channel.id)
             if channel and len(channel.members) == 0:
                 try:
+                    channel_name = channel.name  # Save before deletion
                     await channel.delete()
-                    await log_to_channel(self.bot, f"🗑️ `{channel.name}` 자동 삭제됨")
+                    await log_to_channel(self.bot, f"🗑️ `{channel_name}` 자동 삭제됨")
                     created_channels.pop(channel.id, None)
                 except Exception as e:
                     await log_to_channel(self.bot, f"❌ 채널 삭제 오류: {e}")
-            elif not channel:
-                created_channels.pop(before.channel.id, None)
 
         # ── create new temp channel on join trigger ──
         if after.channel and after.channel.name == "🔊┆임시 음성채널 생성":
