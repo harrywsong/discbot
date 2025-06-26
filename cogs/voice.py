@@ -74,7 +74,8 @@ class VoiceManager(commands.Cog):
                         await channel.delete()
                         await log_to_channel(self.bot, f"🗑️ 비어있는 채널 `{channel_name}` 삭제됨")
                     except Exception as e:
-                        await log_to_channel(self.bot, f"❌ 삭제 실패: `{channel.name}` - {e}")
+                        # Use saved channel_name safely in case of error
+                        await log_to_channel(self.bot, f"❌ 삭제 실패: `{channel_name}` - {e}")
                     to_remove.append(chan_id)
 
         for cid in to_remove:
@@ -87,7 +88,10 @@ class VoiceManager(commands.Cog):
         # ── auto‑delete empty temp channels ──
         if before.channel and before.channel.id in created_channels:
             channel = self.bot.get_channel(before.channel.id)
-            if channel and len(channel.members) == 0:
+            if not channel:
+                # Channel no longer exists; remove from tracking
+                created_channels.pop(before.channel.id, None)
+            elif len(channel.members) == 0:
                 try:
                     channel_name = channel.name  # Save name before deletion
                     await channel.delete()
