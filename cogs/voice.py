@@ -92,13 +92,19 @@ class VoiceManager(commands.Cog):
                 # Channel no longer exists; remove from tracking
                 created_channels.pop(before.channel.id, None)
             elif len(channel.members) == 0:
+                channel_name = channel.name  # Save name before deletion
                 try:
-                    channel_name = channel.name  # Save name before deletion
                     await channel.delete()
                     await log_to_channel(self.bot, f"🗑️ `{channel_name}` 자동 삭제됨")
-                    created_channels.pop(channel.id, None)
+                except discord.NotFound:
+                    # Channel already deleted — just log simplified message
+                    await log_to_channel(self.bot, f"🗑️ `{channel_name}` 자동 삭제됨")
                 except Exception as e:
+                    # Other errors
                     await log_to_channel(self.bot, f"❌ 채널 삭제 오류: {e}")
+                finally:
+                    # Always remove from tracking regardless of success or failure
+                    created_channels.pop(before.channel.id, None)
 
         # ── create new temp channel on join trigger ──
         if after.channel and after.channel.name == "🔊┆임시 음성채널 생성":
