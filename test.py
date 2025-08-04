@@ -10,13 +10,13 @@ from discord.ext import commands
 from discord.ui import Button, Select
 from cogs.tickets import HelpView, CloseTicketView
 from cogs.voice import created_channels
-from cogs.xp import voice_session_starts, DailyXPView
+from hidden.xp import voice_session_starts, DailyXPView
 from cogs.reactions import reaction_mappings  # ← Make sure to import this
 import zoneinfo
 zoneinfo.ZoneInfo = lambda key: timezone.utc
-import cogs.xp
+import hidden.xp
 # Replace the ZoneInfo name inside cogs.xp with a dummy that always returns UTC
-cogs.xp.ZoneInfo = lambda key: timezone.utc
+hidden.xp.ZoneInfo = lambda key: timezone.utc
 
 import logging
 logging.getLogger().handlers.clear()

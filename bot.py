@@ -1,4 +1,4 @@
-import os, sys
+import os
 import ssl
 import asyncio
 import asyncpg
@@ -86,7 +86,7 @@ async def main():
     await load_extensions()
 
     from cogs.tickets import HelpView
-    from cogs.xp import DailyXPView
+    from hidden.xp import DailyXPView
     from cogs.coins import DailyCoinsView
 
     bot.add_view(HelpView(bot))
