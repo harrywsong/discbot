@@ -23,7 +23,7 @@ created_channels: dict[int, datetime] = {}
 class VoiceManager(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.periodic_update.start()
+        # self.periodic_update.start()
         self.periodic_cleanup.start()
 
     # @tasks.loop(minutes=60)
